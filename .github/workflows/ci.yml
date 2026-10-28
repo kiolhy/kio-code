@@ -132,21 +132,26 @@ jobs:
           '网关已就绪'
 
       - name: 环境诊断
+        continue-on-error: true
         shell: pwsh
         run: |
-          Write-Host "pfx 存在 : $(Test-Path data/certs/capture.pfx)"
-          Write-Host "crt 存在 : $(Test-Path data/certs/capture.crt)"
-          Write-Host "健康检查 : $((Invoke-WebRequest 'http://127.0.0.1:8787/health' -UseBasicParsing -TimeoutSec 3).StatusCode)"
-          Write-Host "443 监听 : $([bool](Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue))"
-          try {
-            $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, 443)
-            $l.Start(); $l.Stop()
-            Write-Host "443 可绑定: True"
-          } catch {
-            Write-Host "::warning::443 绑定测试失败：$($_.Exception.Message)"
+          $ErrorActionPreference = 'Continue'
+          function Try-Report($label, $block) {
+            try { Write-Host ("{0}: {1}" -f $label, (& $block)) }
+            catch { Write-Host ("{0}: 检查失败 - {1}" -f $label, $_.Exception.Message) }
           }
-          $cap = Get-Content data/server.log -Raw -ErrorAction SilentlyContinue
-          if ($cap -match 'capture') { Write-Host "server.log 含 capture 记录" } else { Write-Host "server.log 未见 capture 记录" }
+          Try-Report 'pfx 存在'  { Test-Path 'data/certs/capture.pfx' }
+          Try-Report 'crt 存在'  { Test-Path 'data/certs/capture.crt' }
+          Try-Report '健康检查'  { (Invoke-WebRequest 'http://127.0.0.1:8787/health' -UseBasicParsing -TimeoutSec 3).StatusCode }
+          Try-Report '443 监听'  { (Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue).Count }
+          Try-Report 'server.log' {
+            $cap = Get-Content 'data/server.log' -Raw -ErrorAction SilentlyContinue
+            if ($cap) { "长度 $($cap.Length)，含 capture: $([bool]($cap -match 'capture'))" } else { '空' }
+          }
+          Try-Report 'server.err' {
+            $err = Get-Content 'data/server.err.log' -Raw -ErrorAction SilentlyContinue
+            if ($err) { $err.Substring(0, [Math]::Min(400, $err.Length)) } else { '空' }
+          }
 
       - name: 捕获链路测试
         shell: pwsh
