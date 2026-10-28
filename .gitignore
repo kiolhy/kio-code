@@ -18,3 +18,7 @@ Thumbs.db
 
 # 提取出来的官方 CLI（体积大且非本项目产物）
 _codearts_re/
+
+# CI ????
+config.ci.json
+.server.pid

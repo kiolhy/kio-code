@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 测试 (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 显示环境
+        run: |
+          node --version
+          npm --version 2>/dev/null || true
+
+      - name: 准备 CI 配置（关闭 443 捕获，CI 里无法绑定特权端口）
+        run: |
+          mkdir -p data
+          node -e "
+            const fs = require('fs');
+            const c = JSON.parse(fs.readFileSync('config.json', 'utf8'));
+            c.capture = { ...(c.capture || {}), enabled: false };
+            fs.writeFileSync('config.ci.json', JSON.stringify(c, null, 2));
+            console.log('capture.enabled =', c.capture.enabled);
+          "
+
+      - name: 启动网关
+        run: |
+          MOCK_HUB_CONFIG=config.ci.json node server.mjs > data/server.log 2>&1 &
+          echo $! > .server.pid
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8787/health > /dev/null 2>&1; then
+              echo "网关已就绪（第 $i 次探测）"
+              curl -s http://127.0.0.1:8787/health
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo "网关启动失败，日志："
+          cat data/server.log
+          cat data/server.err.log 2>/dev/null || true
+          exit 1
+
+      - name: 接口自检
+        run: node tools/selftest.mjs
+
+      - name: 新增能力（工具调用 / codebase / 会话路由）
+        run: node tools/test-tools.mjs
+
+      - name: 重放
+        run: node tools/test-replay.mjs
+
+      - name: 批量重放
+        run: node tools/test-batch.mjs
+
+      - name: 控制台（认证 / 账号池 / API Key / 用量）
+        run: node tools/test-panel.mjs
+
+      - name: 代理模式
+        run: node tools/test-proxy.mjs
+
+      - name: 完整会话模拟
+        run: node tools/simulate-cli.mjs
+
+      - name: 收集日志
+        if: always()
+        run: |
+          echo '--- data/server.log ---'
+          cat data/server.log 2>/dev/null || true
+          echo '--- data/server.err.log ---'
+          cat data/server.err.log 2>/dev/null || true
+
+      - name: 停止网关
+        if: always()
+        run: |
+          if [ -f .server.pid ]; then kill "$(cat .server.pid)" 2>/dev/null || true; fi
+
+  # 443 捕获需要绑定特权端口与自签证书（make-cert.ps1 仅 Windows），单独跑在 Windows 上
+  capture:
+    name: 443 捕获 (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 生成自签证书
+        shell: pwsh
+        run: ./tools/make-cert.ps1
+
+      - name: 启动网关
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path data | Out-Null
+          Start-Process node -ArgumentList 'server.mjs' -WorkingDirectory $PWD `
+            -RedirectStandardOutput data/server.log -RedirectStandardError data/server.err.log
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Milliseconds 250
+            try {
+              if ((Invoke-WebRequest 'http://127.0.0.1:8787/health' -TimeoutSec 1 -UseBasicParsing).StatusCode -eq 200) {
+                '网关已就绪'; break
+              }
+            } catch {}
+          }
+
+      - name: 捕获链路测试
+        shell: pwsh
+        run: node tools/test-capture.mjs
+
+      - name: 收集日志
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Content data/server.log -ErrorAction SilentlyContinue
+          Get-Content data/server.err.log -ErrorAction SilentlyContinue
