@@ -113,11 +113,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path data | Out-Null
-          # runner 上 0.0.0.0:443 可能被 NAT/防火墙拦，显式绑回环再试
+          # GitHub Windows runner 上 443 连不通（即使 listen 成功），
+          # 这里换 8443 验证捕获链路本身；443 端口留给本地实测。
           node -e "
             const fs = require('fs');
             const c = JSON.parse(fs.readFileSync('config.json', 'utf8'));
-            c.capture = { ...(c.capture || {}), enabled: true, host: '127.0.0.1', port: 443 };
+            c.capture = { ...(c.capture || {}), enabled: true, host: '127.0.0.1', port: 8443 };
             fs.writeFileSync('config.capture-ci.json', JSON.stringify(c, null, 2));
             console.log('capture:', JSON.stringify(c.capture));
           "
@@ -165,6 +166,8 @@ jobs:
 
       - name: 捕获链路测试
         shell: pwsh
+        env:
+          CAP_PORT: '8443'
         run: |
           $out = (node tools/test-capture.mjs 2>&1 | Out-String)
           Write-Host $out

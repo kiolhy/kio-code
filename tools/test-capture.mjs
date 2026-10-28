@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const HUB = 'http://127.0.0.1:8787';
-const CAP_PORT = 443;
+const CAP_PORT = Number(process.env.CAP_PORT ?? 443);
 const COLLECTOR = 'collector-agents-access.cn-north-4.myhuaweicloud.com';
 const SNAP = 'snap-access.cn-north-4.myhuaweicloud.com';
 
