@@ -22,3 +22,4 @@ _codearts_re/
 # CI ????
 config.ci.json
 .server.pid
+config.capture-ci.json

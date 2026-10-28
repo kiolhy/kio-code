@@ -113,6 +113,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path data | Out-Null
+          # runner 上 0.0.0.0:443 可能被 NAT/防火墙拦，显式绑回环再试
+          node -e "
+            const fs = require('fs');
+            const c = JSON.parse(fs.readFileSync('config.json', 'utf8'));
+            c.capture = { ...(c.capture || {}), enabled: true, host: '127.0.0.1', port: 443 };
+            fs.writeFileSync('config.capture-ci.json', JSON.stringify(c, null, 2));
+            console.log('capture:', JSON.stringify(c.capture));
+          "
+          $env:MOCK_HUB_CONFIG = 'config.capture-ci.json'
           Start-Process node -ArgumentList 'server.mjs' -WorkingDirectory $PWD `
             -RedirectStandardOutput data/server.log -RedirectStandardError data/server.err.log
           $up = $false
@@ -129,7 +138,8 @@ jobs:
             Write-Host "::error::网关未就绪。stderr=$log"
             exit 1
           }
-          '网关已就绪'
+          Start-Sleep -Seconds 2
+          Write-Host "网关已就绪"
 
       - name: 环境诊断
         continue-on-error: true
