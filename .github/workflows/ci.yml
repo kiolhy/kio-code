@@ -115,18 +115,50 @@ jobs:
           New-Item -ItemType Directory -Force -Path data | Out-Null
           Start-Process node -ArgumentList 'server.mjs' -WorkingDirectory $PWD `
             -RedirectStandardOutput data/server.log -RedirectStandardError data/server.err.log
+          $up = $false
           for ($i = 0; $i -lt 60; $i++) {
             Start-Sleep -Milliseconds 250
             try {
               if ((Invoke-WebRequest 'http://127.0.0.1:8787/health' -TimeoutSec 1 -UseBasicParsing).StatusCode -eq 200) {
-                '网关已就绪'; break
+                $up = $true; break
               }
             } catch {}
           }
+          if (-not $up) {
+            $log = (Get-Content data/server.err.log -Raw -ErrorAction SilentlyContinue)
+            Write-Host "::error::网关未就绪。stderr=$log"
+            exit 1
+          }
+          '网关已就绪'
+
+      - name: 环境诊断
+        shell: pwsh
+        run: |
+          Write-Host "pfx 存在 : $(Test-Path data/certs/capture.pfx)"
+          Write-Host "crt 存在 : $(Test-Path data/certs/capture.crt)"
+          Write-Host "健康检查 : $((Invoke-WebRequest 'http://127.0.0.1:8787/health' -UseBasicParsing -TimeoutSec 3).StatusCode)"
+          Write-Host "443 监听 : $([bool](Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue))"
+          try {
+            $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, 443)
+            $l.Start(); $l.Stop()
+            Write-Host "443 可绑定: True"
+          } catch {
+            Write-Host "::warning::443 绑定测试失败：$($_.Exception.Message)"
+          }
+          $cap = Get-Content data/server.log -Raw -ErrorAction SilentlyContinue
+          if ($cap -match 'capture') { Write-Host "server.log 含 capture 记录" } else { Write-Host "server.log 未见 capture 记录" }
 
       - name: 捕获链路测试
         shell: pwsh
-        run: node tools/test-capture.mjs
+        run: |
+          $out = (node tools/test-capture.mjs 2>&1 | Out-String)
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (($out -split "`r?`n") | Where-Object { $_ -match '✗|Error|error|ECONN|EADDR|Cannot' } | Select-Object -First 6) -join ' || '
+            if (-not $tail) { $tail = (($out -split "`r?`n") | Select-Object -Last 6) -join ' || ' }
+            Write-Host "::error::test-capture 失败（exit=$LASTEXITCODE）：$tail"
+            exit 1
+          }
 
       - name: 收集日志
         if: always()
