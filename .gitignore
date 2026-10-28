@@ -1,0 +1,20 @@
+# 运行时数据：包含真实凭据、遥测、请求体、自签证书，绝不入库
+data/
+*.log
+
+# 依赖
+node_modules/
+
+# 本地环境
+.env
+.env.*
+*.local
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 提取出来的官方 CLI（体积大且非本项目产物）
+_codearts_re/

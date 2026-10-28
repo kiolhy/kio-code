@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mock-hub · 码道 CLI 后端模拟网关</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2a3441;
+    --fg:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --ok:#3fb950;
+    --warn:#d29922; --err:#f85149; --purple:#bc8cff;
+    --mono:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.94);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:10px 18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
+  h1 span{color:var(--accent)}
+  .badge{font:11px/1 var(--mono);padding:4px 7px;border-radius:5px;border:1px solid var(--line);color:var(--dim)}
+  .badge.mock{color:var(--ok);border-color:#1f6f34;background:#0d2818}
+  .badge.proxy{color:var(--purple);border-color:#4b2d80;background:#1e1330}
+  .stats{display:flex;gap:14px;margin-left:auto;flex-wrap:wrap}
+  .stat{display:flex;flex-direction:column;align-items:flex-end;min-width:56px}
+  .stat b{font:600 15px/1.2 var(--mono);color:var(--fg)}
+  .stat i{font-style:normal;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+  nav{display:flex;gap:4px;padding:10px 18px 0;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid transparent;border-bottom:2px solid transparent;
+    color:var(--dim);padding:7px 13px;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px}
+  nav button:hover{color:var(--fg);background:var(--panel)}
+  nav button.on{color:var(--accent);border-bottom-color:var(--accent);background:var(--panel)}
+  main{padding:14px 18px 60px;max-width:1500px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:14px;margin-bottom:14px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--dim);font-weight:600;letter-spacing:.4px;text-transform:uppercase}
+  table{width:100%;border-collapse:collapse;font:12px/1.5 var(--mono)}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:var(--panel);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  td{padding:5px 8px;border-bottom:1px solid #1e242d;vertical-align:top}
+  tr.row:hover td{background:var(--panel2)}
+  tr.row{cursor:pointer}
+  .m{color:var(--dim)}
+  .s2{color:var(--ok)} .s4{color:var(--warn)} .s5{color:var(--err)}
+  .path{color:var(--accent);word-break:break-all}
+  .route{color:var(--purple)}
+  .pill{display:inline-block;padding:1px 6px;border-radius:4px;background:#21262d;color:var(--dim);font-size:10px}
+  .pill.stream{background:#132b3a;color:#58a6ff}
+.pill.cap{background:#2a1f36;color:#bc8cff;margin-left:2px}
+  pre{margin:6px 0 0;padding:9px;background:#0b0f14;border:1px solid var(--line);border-radius:6px;
+    font:11.5px/1.5 var(--mono);overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all;color:#c9d1d9}
+  .detail td{background:#0b0f14}
+  .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+  input[type=text],select,textarea{background:#0b0f14;border:1px solid var(--line);color:var(--fg);
+    border-radius:6px;padding:6px 9px;font:12px var(--mono);outline:none}
+  input[type=text]:focus,textarea:focus{border-color:var(--accent)}
+  textarea{width:100%;min-height:300px;resize:vertical}
+  button.act{background:#21262d;border:1px solid var(--line);color:var(--fg);border-radius:6px;
+    padding:6px 12px;cursor:pointer;font-size:12px}
+  button.act:hover{border-color:var(--accent);color:var(--accent)}
+  button.act.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  button.act.primary:hover{background:#2f81f7;color:#fff}
+  .empty{color:var(--dim);padding:22px;text-align:center;font-size:13px}
+  .k{color:var(--dim)} .v{color:#c9d1d9}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+  .kv{background:#0b0f14;border:1px solid var(--line);border-radius:7px;padding:9px 11px}
+  .kv b{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+  .kv span{font:12.5px var(--mono);color:var(--fg);word-break:break-all}
+  .hint{color:var(--dim);font-size:12px;margin:6px 0 0}
+  .warnbox{border-left:3px solid var(--warn);background:#1f1a08;padding:9px 12px;border-radius:0 6px 6px 0;
+    color:#e3b341;font-size:12.5px;margin-bottom:12px}
+
+  /* 重放 */
+  td.ops{text-align:right;white-space:nowrap}
+  button.mini{padding:2px 7px;font-size:12px;line-height:1.4;background:#21262d;border:1px solid var(--line);
+    color:var(--dim);border-radius:5px;cursor:pointer}
+  button.mini:hover{border-color:var(--accent);color:var(--accent);background:#1c2330}
+  button.mini:disabled{opacity:.45;cursor:default;border-color:var(--line);color:var(--dim)}
+  button.mini.busy{color:var(--accent);border-color:var(--accent)}
+  .detail .dsec{margin:8px 0 2px;font:11px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .detail textarea{min-height:120px;font:11.5px/1.5 var(--mono)}
+  .rep{margin-top:10px;padding:9px 11px;border-radius:7px;border:1px solid var(--line);background:#0b0f14}
+  .rep.ok{border-color:#1f6f34;background:#0d1f14}
+  .rep.bad{border-color:#6e2a2a;background:#1f0d0d}
+  .rep .rhead{font:12px var(--mono);margin-bottom:6px}
+  .rep.ok .rhead{color:var(--ok)} .rep.bad .rhead{color:var(--err)}
+  .rep pre{max-height:220px;margin:6px 0 0}
+  .rep a{color:var(--accent);cursor:pointer;text-decoration:underline}
+</style>
+</head>
+<body>
+<header>
+  <h1>mock-hub <span>·</span> 码道 CLI 后端模拟网关</h1>
+  <span class="badge" id="modeBadge">…</span>
+  <span class="badge" id="upBadge">…</span>
+  <div class="stats">
+    <div class="stat"><b id="cReq">0</b><i>请求</i></div>
+    <div class="stat"><b id="cChat">0</b><i>模型调用</i></div>
+    <div class="stat"><b id="cTel">0</b><i>遥测</i></div>
+    <div class="stat"><b id="cCred">0</b><i>凭证</i></div>
+    <div class="stat"><b id="cErr">0</b><i>错误</i></div>
+  </div>
+</header>
+
+<nav>
+  <button class="on" data-tab="overview">概览</button>
+  <button data-tab="requests">请求流水</button>
+  <button data-tab="telemetry">遥测</button>
+  <button data-tab="credentials">凭证</button>
+  <button data-tab="models">模型</button>
+  <button data-tab="config">配置</button>
+</nav>
+
+<main>
+  <section id="tab-overview">
+    <div class="warnbox" id="hintBox" style="display:none"></div>
+    <div class="card">
+      <h2>接入方式</h2>
+      <div class="grid" id="accessGrid"></div>
+      <p class="hint">把 CLI 的 inferhub 地址指到本服务，所有模型请求、遥测、心跳都会落到这里。</p>
+    </div>
+    <div class="card">
+      <h2>接口命中分布</h2>
+      <table><thead><tr><th>接口</th><th style="width:80px">次数</th></tr></thead><tbody id="byPathBody"></tbody></table>
+    </div>
+  </section>
+
+  <section id="tab-requests" hidden>
+    <div class="card">
+      <div class="toolbar">
+        <input type="text" id="reqFilter" placeholder="过滤：路径 / 接口名 / 模型 / 状态码" style="flex:1;min-width:220px" />
+        <button class="act" id="btnProbe">自检全部路由</button>
+        <button class="act" id="btnReset">清空记录</button>
+      </div>
+      <div class="toolbar">
+        <span class="hint" style="margin:0">已选 <b id="selCount">0</b> 条</span>
+        <button class="act" id="btnSelFiltered">选中筛选结果</button>
+        <button class="act" id="btnSelNone">清空选择</button>
+        <span class="hint" style="margin:0 0 0 8px">并发</span>
+        <input type="number" id="batchConc" value="4" min="1" max="32" style="width:62px" />
+        <span class="hint" style="margin:0">间隔ms</span>
+        <input type="number" id="batchGap" value="0" min="0" max="5000" style="width:68px" />
+        <button class="act primary" id="btnBatch">↻ 批量重放选中</button>
+        <span class="hint" id="batchMsg" style="margin:0"></span>
+      </div>
+      <div id="batchPanel" class="rep" hidden></div>
+      <table>
+        <thead><tr>
+          <th style="width:26px"><input type="checkbox" id="chkAll" title="全选 / 全不选当前筛选结果" /></th>
+          <th style="width:66px">时间</th><th style="width:52px">方法</th><th>路径</th>
+          <th style="width:170px">接口</th><th style="width:48px">状态</th>
+          <th style="width:60px">耗时</th><th style="width:120px">模型</th><th style="width:70px">大小</th>
+          <th style="width:52px"></th>
+        </tr></thead>
+        <tbody id="reqBody"></tbody>
+      </table>
+      <div class="empty" id="reqEmpty">暂无请求</div>
+    </div>
+  </section>
+
+  <section id="tab-telemetry" hidden>
+    <div class="card">
+      <div class="toolbar"><input type="text" id="telFilter" placeholder="过滤遥测内容" style="flex:1;min-width:220px" /></div>
+      <table><thead><tr>
+        <th style="width:66px">时间</th><th style="width:70px">类型</th><th style="width:80px">格式</th>
+        <th style="width:70px">大小</th><th style="width:190px">来源</th><th>内容</th>
+      </tr></thead><tbody id="telBody"></tbody></table>
+      <div class="empty" id="telEmpty">暂无遥测数据 —— CLI 上报的 OTLP logs/traces 会出现在这里</div>
+    </div>
+  </section>
+
+  <section id="tab-credentials" hidden>
+    <div class="card">
+      <h2>捕获到的凭证</h2>
+      <table><thead><tr>
+        <th style="width:150px">类型</th><th>值</th><th style="width:56px">次数</th>
+        <th style="width:150px">首次</th><th style="width:150px">最近</th>
+      </tr></thead><tbody id="credBody"></tbody></table>
+      <div class="empty" id="credEmpty">还没有捕获到凭证 —— CLI 一旦发请求就会记录 x-auth-token / AK / 签名</div>
+    </div>
+  </section>
+
+  <section id="tab-models" hidden>
+    <div class="card">
+      <h2>模型清单（对应 data.gpts.models）</h2>
+      <textarea id="modelsEditor" spellcheck="false"></textarea>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="act primary" id="btnSaveModels">保存</button>
+        <button class="act" id="btnReloadModels">重新载入</button>
+        <span class="hint" id="modelsMsg"></span>
+      </div>
+      <p class="hint">字段：model_name / model_type / model_parameters{model_id,context_window,input_length,max_tokens,thinking_type,enable_queue,third_party_model} / credit</p>
+    </div>
+  </section>
+
+  <section id="tab-config" hidden>
+    <div class="card">
+      <h2>运行时配置（config.json）</h2>
+      <textarea id="cfgEditor" spellcheck="false"></textarea>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="act primary" id="btnSaveCfg">保存并热加载</button>
+        <button class="act" id="btnReloadCfg">重新载入</button>
+        <span class="hint" id="cfgMsg"></span>
+      </div>
+      <p class="hint">改 mode 为 <code>proxy</code> 并把 upstream.baseUrl 填成真实网关，即可从模拟切成真反代。</p>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+let state = null;
+let curTab = 'overview';
+const expanded = new Set();
+const details = new Map();        // id -> { entry, rawHeaders, bodyText, canReplay }
+const replayResults = new Map();  // id -> replay 响应
+const replayBusy = new Set();
+const selected = new Set();       // 批量重放的选中集合
+let lastFiltered = [];            // 当前筛选后的行，供全选使用
+let batchResult = null;           // 批量重放结果
+let batchBusy = false;
+let editing = false;              // 详情里的 textarea 正在编辑时暂停重绘
+
+$$('nav button').forEach((b) => b.addEventListener('click', () => {
+  curTab = b.dataset.tab;
+  $$('nav button').forEach((x) => x.classList.toggle('on', x === b));
+  $$('main section').forEach((s) => (s.hidden = s.id !== 'tab-' + curTab));
+}));
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function cls(status) {
+  if (status >= 500) return 's5';
+  if (status >= 400) return 's4';
+  if (status >= 200 && status < 300) return 's2';
+  return 'm';
+}
+function hhmmss(ts) {
+  return ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+}
+function bytes(n) {
+  if (!n) return '0';
+  if (n < 1024) return n + 'B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + 'K';
+  return (n / 1048576).toFixed(1) + 'M';
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/admin/api/state');
+    state = await r.json();
+    if (!editing) render();
+  } catch (e) {
+    $('#modeBadge').textContent = '连接断开';
+  }
+}
+
+function render() {
+  if (!state) return;
+  const { config: cfg, counters, byPath, requests, telemetry, credentials, uptimeSec } = state;
+
+  $('#modeBadge').textContent = cfg.mode === 'proxy' ? '反代 → ' + cfg.upstream.baseUrl : '模拟模式';
+  $('#modeBadge').className = 'badge ' + (cfg.mode === 'proxy' ? 'proxy' : 'mock');
+  $('#upBadge').textContent = '运行 ' + Math.floor(uptimeSec / 60) + 'm' + (uptimeSec % 60) + 's';
+  $('#cReq').textContent = counters.requests;
+  $('#cChat').textContent = counters.chats;
+  $('#cTel').textContent = counters.telemetry;
+  $('#cCred').textContent = credentials.length;
+  $('#cErr').textContent = counters.errors;
+
+  // 概览
+  const base = location.origin;
+  $('#accessGrid').innerHTML = [
+    ['网关基址', base],
+    ['推理入口', base + '/api/v2/chat/completions'],
+    ['Anthropic 兼容', base + '/v1/messages'],
+    ['模型清单', base + '/v1/agent-center/agents/detail?agent_id=' + (cfg.identity?.agentId ?? '')],
+    ['遥测接收', base + '/collector/v1/{logs,traces}'],
+    ['特性开关', base + '/PromptCenterService/v1/policy/feature-toggle'],
+  ].map(([k, v]) => `<div class="kv"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('');
+
+  const bp = Object.entries(byPath || {});
+  $('#byPathBody').innerHTML = bp.length
+    ? bp.map(([k, v]) => `<tr><td class="path">${esc(k)}</td><td class="v">${v}</td></tr>`).join('')
+    : '<tr><td colspan="2" class="empty">暂无</td></tr>';
+
+  // 请求
+  const rf = ($('#reqFilter').value || '').toLowerCase();
+  const rows = (requests || []).filter((r) =>
+    !rf || (r.path + ' ' + r.route + ' ' + (r.model ?? '') + ' ' + r.status).toLowerCase().includes(rf)
+  );
+  $('#reqEmpty').style.display = rows.length ? 'none' : 'block';
+  $('#reqBody').innerHTML = rows.map((r) => {
+    const open = expanded.has(r.id);
+    const busy = replayBusy.has(r.id);
+    const main = `<tr class="row" data-id="${esc(r.id)}">
+      <td><input type="checkbox" class="rowchk" data-id="${esc(r.id)}" ${selected.has(r.id) ? 'checked' : ''} /></td>
+      <td class="m">${hhmmss(r.ts)}</td>
+      <td class="m">${esc(r.method)}</td>
+      <td class="path">${esc(r.path)}${r.query ? `<span class="m">${esc(r.query)}</span>` : ''}
+        ${r.replayOf ? '<span class="pill" title="由重放产生">重放</span>' : ''}</td>
+      <td class="route">${esc(r.route)} ${r.stream ? '<span class="pill stream">SSE</span>' : ''}${r.injected ? '<span class="pill">注入</span>' : ''}${r.ingress === 'https' ? `<span class="pill cap" title="经 443 捕获，来源 ${esc(r.host ?? '')}">⇅ ${esc((r.host ?? '').split('.')[0])}</span>` : ''}</td>
+      <td class="${cls(r.status)}">${r.status}</td>
+      <td class="m">${r.durMs ?? '-'}ms</td>
+      <td class="v">${esc(r.model ?? '')}</td>
+      <td class="m">${bytes(r.reqBytes)}→${bytes(r.resBytes)}</td>
+      <td class="ops"><button class="mini ${busy ? 'busy' : ''}" data-replay="${esc(r.id)}"
+        title="原样重放这条请求" ${busy ? 'disabled' : ''}>${busy ? '…' : '↻'}</button></td>
+    </tr>`;
+    if (!open) return main;
+    return main + detailRow(r);
+  }).join('');
+
+  lastFiltered = rows;
+  updateSelCount();
+  renderBatch();
+  const chkAll = $('#chkAll');
+  if (chkAll) {
+    chkAll.checked = rows.length > 0 && rows.every((r) => selected.has(r.id));
+    chkAll.indeterminate = !chkAll.checked && rows.some((r) => selected.has(r.id));
+  }
+
+  // 遥测
+  const tf = ($('#telFilter').value || '').toLowerCase();
+  const tels = (telemetry || []).filter((t) => !tf || JSON.stringify(t).toLowerCase().includes(tf));
+  $('#telEmpty').style.display = tels.length ? 'none' : 'block';
+  $('#telBody').innerHTML = tels.map((t) => {
+    const text = t.items?.length
+      ? t.items.slice(0, 6).map((i) => (i.name || JSON.stringify(i.attributes))).join(' | ')
+      : (t.texts || []).slice(0, 12).join(' | ');
+    return `<tr><td class="m">${hhmmss(t.ts)}</td>
+      <td class="v">${esc(t.kind)}</td>
+      <td class="m">${esc(t.format ?? '')}</td>
+      <td class="m">${bytes(t.bytes)}</td>
+      <td class="m">${t.host ? `<span class="pill cap">⇅ ${esc(t.host.split('.')[0])}</span>` : ''}</td>
+      <td class="v">${esc(text).slice(0, 900)}</td></tr>`;
+  }).join('');
+
+  // 凭证
+  $('#credEmpty').style.display = credentials.length ? 'none' : 'block';
+  $('#credBody').innerHTML = credentials.map((c) => `<tr>
+    <td class="route">${esc(c.kind)}</td>
+    <td class="v">${esc(c.value)}</td>
+    <td class="m">${c.hits}</td>
+    <td class="m">${esc(c.firstSeen?.slice(11, 19) ?? '')}</td>
+    <td class="m">${esc(c.lastSeen?.slice(11, 19) ?? '')}</td>
+  </tr>`).join('');
+
+  // 配置编辑器（不覆盖正在编辑的内容）
+  const cfgEd = $('#cfgEditor');
+  if (document.activeElement !== cfgEd) cfgEd.value = JSON.stringify(cfg, null, 2);
+  const modEd = $('#modelsEditor');
+  if (document.activeElement !== modEd) modEd.value = JSON.stringify(cfg.models, null, 2);
+}
+
+/* ---------------- 详情 + 重放 ---------------- */
+
+function detailRow(r) {
+  const d = details.get(r.id);
+  const rep = replayResults.get(r.id);
+  const open = '<tr class="detail"><td colspan="10">';
+
+  if (!d) return open + '<pre>加载中…</pre></td></tr>';
+
+  const busy = replayBusy.has(r.id) ? 'disabled' : '';
+  return (
+    open +
+    (r.ingress === 'https'
+      ? `<div class="dsec">捕获来源</div><pre>${esc(r.ingress)}://${esc(r.host ?? '?')}${esc(r.path)}${esc(r.query ?? '')}</pre>`
+      : '') +
+    '<div class="dsec">请求头（原始，未脱敏）</div>' +
+    `<pre>${esc(JSON.stringify(d.rawHeaders ?? d.entry.headers ?? {}, null, 2))}</pre>` +
+    `<div class="dsec">请求体 ${d.bodyBytes ? `(${bytes(d.bodyBytes)})` : '（空）'}</div>` +
+    (d.canReplay
+      ? `<textarea data-bodyfor="${esc(r.id)}" spellcheck="false" placeholder="（空 body）">${esc(d.bodyText ?? '')}</textarea>`
+      : '<pre class="m">原始 body 未保留（超过 1MB 或已被环形缓冲淘汰），可查看但无法重放</pre>') +
+    '<div class="toolbar" style="margin-top:8px">' +
+    `<button class="act primary" data-replay="${esc(r.id)}" ${busy}>↻ 原样重放</button>` +
+    (d.canReplay ? `<button class="act" data-replaybody="${esc(r.id)}" ${busy}>↻ 用编辑后的 body 重放</button>` : '') +
+    `<span class="hint">${esc(d.entry.method)} ${esc(d.entry.path)}${esc(d.entry.query ?? '')}</span>` +
+    '</div>' +
+    (rep ? replayBlock(rep) : '') +
+    '</td></tr>'
+  );
+}
+
+function replayBlock(rep) {
+  if (!rep.ok) {
+    return `<div class="rep bad"><div class="rhead">重放失败 · ${esc(rep.durationMs ?? 0)}ms</div>
+      <pre>${esc(rep.message ?? rep.error ?? '')}</pre></div>`;
+  }
+  const sse = rep.sse ? ` · SSE ${rep.sse.blocks} 块${rep.sse.sawDone ? ' · [DONE]' : ''}` : '';
+  return `<div class="rep ok">
+    <div class="rhead">重放成功 · ${rep.status} · ${esc(rep.durationMs)}ms${sse}${rep.bodyOverride ? ' · 已改写 body' : ''}</div>
+    <pre>${esc(rep.preview ?? '')}</pre>
+    ${rep.replayedId ? `<div class="hint">已生成新记录 <a data-jump="${esc(rep.replayedId)}">${esc(rep.replayedId)}</a></div>` : ''}
+  </div>`;
+}
+
+/* ---------------- 批量重放 ---------------- */
+
+function updateSelCount() {
+  $('#selCount').textContent = selected.size;
+}
+
+function renderBatch() {
+  const el = $('#batchPanel');
+  if (!batchResult) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  el.hidden = false;
+
+  if (batchResult.error) {
+    el.className = 'rep bad';
+    el.innerHTML = `<div class="rhead">批量重放失败</div><pre>${esc(JSON.stringify(batchResult, null, 2))}</pre>`;
+    return;
+  }
+
+  const b = batchResult;
+  el.className = b.failed > 0 ? 'rep bad' : 'rep ok';
+  const rows = (b.results ?? [])
+    .map(
+      (r) => `<tr>
+        <td class="m">${esc(r.id)}</td>
+        <td class="${r.ok ? 's2' : 's5'}">${r.ok ? r.status : esc(r.error ?? 'fail')}</td>
+        <td class="m">${r.durationMs ?? 0}ms</td>
+        <td class="m">${esc(r.sse ?? '')}</td>
+        <td class="m">${esc(r.message ?? '')}</td>
+      </tr>`
+    )
+    .join('');
+
+  el.innerHTML = `
+    <div class="rhead">批量重放完成 · 执行 ${b.executed}/${b.total} · 成功 ${b.succeeded} · 失败 ${b.failed} · ${b.durationMs}ms · ${b.qps} rps${b.aborted ? ' · 遇错中止' : ''}</div>
+    <div class="hint">延迟 min ${b.latency?.min}ms / p50 ${b.latency?.p50}ms / p95 ${b.latency?.p95}ms / max ${b.latency?.max}ms · 并发 ${b.concurrency}${b.gapMs ? ` · 间隔 ${b.gapMs}ms` : ''} · 状态分布 ${esc(JSON.stringify(b.byStatus))}</div>
+    <div style="max-height:260px;overflow:auto;margin-top:8px">
+      <table><thead><tr><th>请求</th><th style="width:70px">状态</th><th style="width:70px">耗时</th><th style="width:90px">SSE</th><th>说明</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>
+    <div class="toolbar" style="margin-top:8px"><button class="act" id="btnBatchClose">关闭</button></div>`;
+
+  $('#btnBatchClose')?.addEventListener('click', () => {
+    batchResult = null;
+    renderBatch();
+  });
+}
+
+async function doBatch() {
+  if (batchBusy || selected.size === 0) return;
+  batchBusy = true;
+  batchResult = null;
+  renderBatch();
+
+  const btn = $('#btnBatch');
+  const conc = Math.max(1, Math.min(32, Number($('#batchConc').value) || 4));
+  const gap = Math.max(0, Math.min(5000, Number($('#batchGap').value) || 0));
+  btn.disabled = true;
+  $('#batchMsg').textContent = `重放中… 0/${selected.size}`;
+
+  const tick = setInterval(async () => {
+    try {
+      const s = await (await fetch('/admin/api/state')).json();
+      const n = (s.requests ?? []).filter((r) => r.replayOf && selected.has(r.replayOf)).length;
+      $('#batchMsg').textContent = `重放中… ${Math.min(n, selected.size)}/${selected.size}`;
+    } catch {
+      /* ignore */
+    }
+  }, 700);
+
+  try {
+    const res = await fetch('/admin/api/replay-batch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids: [...selected], concurrency: conc, gapMs: gap }),
+    });
+    batchResult = await res.json();
+  } catch (e) {
+    batchResult = { error: String(e.message ?? e) };
+  } finally {
+    clearInterval(tick);
+    batchBusy = false;
+    btn.disabled = false;
+    $('#batchMsg').textContent = '';
+    renderBatch();
+    await poll();
+  }
+}
+
+$('#chkAll').addEventListener('change', (e) => {
+  if (e.target.checked) for (const r of lastFiltered) selected.add(r.id);
+  else for (const r of lastFiltered) selected.delete(r.id);
+  updateSelCount();
+  render();
+});
+
+$('#btnSelFiltered').addEventListener('click', () => {
+  for (const r of lastFiltered) selected.add(r.id);
+  updateSelCount();
+  render();
+});
+
+$('#btnSelNone').addEventListener('click', () => {
+  selected.clear();
+  updateSelCount();
+  render();
+});
+
+$('#btnBatch').addEventListener('click', doBatch);
+
+$('#reqBody').addEventListener('change', (e) => {
+  const chk = e.target.closest('.rowchk');
+  if (!chk) return;
+  if (chk.checked) selected.add(chk.dataset.id);
+  else selected.delete(chk.dataset.id);
+  updateSelCount();
+});
+
+async function loadDetail(id) {
+  if (details.has(id)) return;
+  try {
+    const r = await fetch('/admin/api/request/' + encodeURIComponent(id));
+    details.set(id, r.ok ? await r.json() : { entry: {}, canReplay: false, rawHeaders: null, bodyText: null });
+  } catch {
+    details.set(id, { entry: {}, canReplay: false, rawHeaders: null, bodyText: null });
+  }
+}
+
+async function doReplay(id, bodyText) {
+  replayBusy.add(id);
+  replayResults.delete(id);
+  render();
+  try {
+    const res = await fetch('/admin/api/replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(bodyText === undefined ? { id } : { id, bodyText }),
+    });
+    replayResults.set(id, await res.json());
+  } catch (e) {
+    replayResults.set(id, { ok: false, message: String(e.message ?? e), durationMs: 0 });
+  } finally {
+    replayBusy.delete(id);
+    editing = false;
+    await poll();
+  }
+}
+
+$('#reqBody').addEventListener('focusin', (e) => {
+  if (e.target.tagName === 'TEXTAREA') editing = true;
+});
+$('#reqBody').addEventListener('focusout', (e) => {
+  if (e.target.tagName === 'TEXTAREA') editing = false;
+});
+
+$('#reqBody').addEventListener('click', async (e) => {
+  const jump = e.target.closest('[data-jump]');
+  if (jump) {
+    const id = jump.dataset.jump;
+    expanded.add(id);
+    await loadDetail(id);
+    render();
+    document.querySelector(`tr.row[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return;
+  }
+
+  const replayBtn = e.target.closest('[data-replay]');
+  if (replayBtn) {
+    e.stopPropagation();
+    await doReplay(replayBtn.dataset.replay);
+    return;
+  }
+
+  const bodyBtn = e.target.closest('[data-replaybody]');
+  if (bodyBtn) {
+    e.stopPropagation();
+    const id = bodyBtn.dataset.replaybody;
+    const ta = document.querySelector(`textarea[data-bodyfor="${CSS.escape(id)}"]`);
+    await doReplay(id, ta ? ta.value : '');
+    return;
+  }
+
+  const tr = e.target.closest('tr.row');
+  if (!tr) return;
+  const id = tr.dataset.id;
+  if (expanded.has(id)) {
+    expanded.delete(id);
+    render();
+  } else {
+    expanded.add(id);
+    render();
+    await loadDetail(id);
+    render();
+  }
+});
+
+$('#reqFilter').addEventListener('input', render);
+$('#telFilter').addEventListener('input', render);
+
+$('#btnReset').addEventListener('click', async () => {
+  await fetch('/admin/api/reset', { method: 'POST' });
+  expanded.clear();
+  poll();
+});
+
+$('#btnProbe').addEventListener('click', async () => {
+  $('#btnProbe').textContent = '自检中…';
+  const r = await fetch('/admin/api/probe', { method: 'POST' });
+  const d = await r.json();
+  const bad = d.results.filter((x) => x.error || x.status >= 500);
+  $('#btnProbe').textContent = bad.length ? `自检完成：${bad.length} 项异常` : `自检完成：${d.results.length} 项全通`;
+  setTimeout(() => ($('#btnProbe').textContent = '自检全部路由'), 4000);
+  poll();
+});
+
+async function saveCfg(patch, msgEl) {
+  const r = await fetch('/admin/api/config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  const d = await r.json();
+  msgEl.textContent = d.ok ? '已保存 ✓' : '保存失败：' + JSON.stringify(d);
+  setTimeout(() => (msgEl.textContent = ''), 3000);
+  poll();
+}
+
+$('#btnSaveCfg').addEventListener('click', async () => {
+  try {
+    const patch = JSON.parse($('#cfgEditor').value);
+    await saveCfg(patch, $('#cfgMsg'));
+  } catch (e) {
+    $('#cfgMsg').textContent = 'JSON 解析失败：' + e.message;
+  }
+});
+$('#btnReloadCfg').addEventListener('click', poll);
+
+$('#btnSaveModels').addEventListener('click', async () => {
+  try {
+    const models = JSON.parse($('#modelsEditor').value);
+    const r = await fetch('/admin/api/models', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(models),
+    });
+    const d = await r.json();
+    $('#modelsMsg').textContent = d.ok ? `已保存 ${d.count} 个模型 ✓` : '保存失败';
+    setTimeout(() => ($('#modelsMsg').textContent = ''), 3000);
+  } catch (e) {
+    $('#modelsMsg').textContent = 'JSON 解析失败：' + e.message;
+  }
+});
+$('#btnReloadModels').addEventListener('click', poll);
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

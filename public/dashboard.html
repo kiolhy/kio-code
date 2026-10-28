@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>码道网关 · 控制台</title>
+<style>
+:root{
+  --bg:#0d1117;--panel:#161b22;--panel2:#1c2128;--line:#30363d;--line2:#21262d;
+  --fg:#e6edf3;--dim:#8b949e;--dim2:#6e7681;
+  --accent:#2f81f7;--ok:#3fb950;--warn:#d29922;--err:#f85149;--purple:#bc8cff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:13px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  display:flex;flex-direction:column;overflow:hidden}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;cursor:pointer;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--fg);padding:5px 11px}
+button:hover{border-color:var(--dim2)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button.danger{color:var(--err);border-color:#4a2027}
+button.sm{padding:2px 8px;font-size:12px}
+input,select,textarea{font:inherit;background:#0d1117;border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px 9px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+
+header{display:flex;align-items:center;gap:18px;padding:0 18px;height:48px;background:var(--panel);
+  border-bottom:1px solid var(--line);flex:0 0 auto}
+header .brand{font-weight:700;font-size:14px;letter-spacing:.3px}
+header .brand span{color:var(--accent)}
+nav{display:flex;gap:2px;flex:1}
+nav button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;color:var(--dim);
+  padding:14px 13px;font-size:13px}
+nav button:hover{color:var(--fg)}
+nav button.on{color:var(--fg);border-bottom-color:var(--accent);font-weight:600}
+header .right{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:12px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+
+main{flex:1;overflow:auto;padding:18px}
+.page{display:none}
+.page.on{display:block}
+h2{margin:0 0 14px;font-size:15px;font-weight:600}
+h3{margin:22px 0 10px;font-size:13px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.grid{display:grid;gap:12px}
+.g4{grid-template-columns:repeat(4,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:1100px){.g4{grid-template-columns:repeat(2,1fr)}.g3,.g2{grid-template-columns:1fr}}
+
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.kpi .label{color:var(--dim);font-size:12px;margin-bottom:6px}
+.kpi .value{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi .sub{color:var(--dim2);font-size:11px;margin-top:3px}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--dim);font-weight:600;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--line2);vertical-align:middle}
+tr:hover td{background:#1a2028}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.empty{color:var(--dim2);padding:22px;text-align:center}
+
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.pill.ok{background:#12261a;color:var(--ok)}
+.pill.off{background:#21262d;color:var(--dim)}
+.pill.err{background:#2d1416;color:var(--err)}
+.pill.warn{background:#2a2210;color:var(--warn)}
+.pill.cap{background:#2a1f36;color:var(--purple)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.muted{color:var(--dim)}
+.hint{color:var(--dim2);font-size:11px;margin-top:6px}
+pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;margin:0;white-space:pre-wrap}
+.toast{position:fixed;right:18px;bottom:18px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:8px;padding:10px 14px;font-size:12px;opacity:0;transform:translateY(8px);
+  transition:.18s;pointer-events:none;max-width:380px}
+.toast.on{opacity:1;transform:none}
+.toast.err{border-color:#4a2027;color:var(--err)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{border:0;border-radius:0;background:none;color:var(--dim);padding:5px 12px}
+.seg button.on{background:var(--accent);color:#fff;font-weight:600}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:0;width:440px;max-width:92vw}
+dialog::backdrop{background:#0008}
+dialog .body{padding:18px}
+dialog h4{margin:0 0 14px;font-size:14px}
+.field{margin-bottom:11px}
+.field label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.field input,.field select{width:100%}
+.bar{height:6px;background:var(--line2);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">码道<span>网关</span></div>
+  <nav id="nav">
+    <button data-tab="gateway" class="on">网关与账号</button>
+    <button data-tab="usage">数据看板</button>
+    <button data-tab="agents">智能体配置</button>
+    <button data-tab="settings">设置</button>
+    <button data-tab="logs">运行日志</button>
+  </nav>
+  <div class="right">
+    <span id="health"><span class="dot"></span> <span id="mode">…</span></span>
+    <button class="sm" onclick="logout()">退出</button>
+  </div>
+</header>
+
+<main>
+  <!-- ============ 网关与账号 ============ -->
+  <section class="page on" id="page-gateway">
+    <h2>网关状态</h2>
+    <div class="grid g4" id="gwKpi"></div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="row">
+        <strong>接入地址</strong>
+        <span class="spacer"></span>
+        <span class="muted" id="gwHint">兼容 OpenAI 协议</span>
+      </div>
+      <pre id="gwUrls" style="margin-top:10px"></pre>
+    </div>
+
+    <h3>账号池</h3>
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <button class="primary" onclick="openAccount()">+ 添加账号</button>
+        <button onclick="loadAccounts()">刷新</button>
+        <span class="spacer"></span>
+        <span class="muted" id="accSummary"></span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>名称</th><th>区域</th><th>类型</th><th>AccessKey</th><th>状态</th><th>过期</th><th>最近使用</th><th class="num">操作</th>
+        </tr></thead>
+        <tbody id="accBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+
+    <h3>API Key</h3>
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <button class="primary" onclick="openKey()">+ 生成 Key</button>
+        <span class="spacer"></span>
+        <span class="muted" id="keySummary"></span>
+      </div>
+      <table>
+        <thead><tr><th>名称</th><th>Key</th><th>绑定账号</th><th>模型限制</th><th>状态</th><th class="num">操作</th></tr></thead>
+        <tbody id="keyBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+      </table>
+      <div class="hint">没有 Key 时网关不做鉴权（方便本地调试）。一旦创建了 Key，所有 <span class="mono">/v1</span> 请求都必须带 <span class="mono">Authorization: Bearer &lt;key&gt;</span>。</div>
+    </div>
+  </section>
+
+  <!-- ============ 数据看板 ============ -->
+  <section class="page" id="page-usage">
+    <div class="row" style="margin-bottom:16px">
+      <h2 style="margin:0">数据看板</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="rangeSeg">
+        <button data-range="today" class="on">今日</button>
+        <button data-range="week">本周</button>
+        <button data-range="month">本月</button>
+        <button data-range="all">全部</button>
+      </div>
+    </div>
+    <div class="grid g4" id="usageKpi"></div>
+
+    <h3>模型用量</h3>
+    <div class="card"><table>
+      <thead><tr><th>模型</th><th class="num">请求</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num">合计</th><th>占比</th></tr></thead>
+      <tbody id="modelBody"><tr><td colspan="6" class="empty">暂无数据</td></tr></tbody>
+    </table></div>
+
+    <div class="grid g2">
+      <div>
+        <h3>账号用量</h3>
+        <div class="card"><table>
+          <thead><tr><th>账号</th><th class="num">请求</th><th class="num">Token</th></tr></thead>
+          <tbody id="accUsageBody"><tr><td colspan="3" class="empty">暂无数据</td></tr></tbody>
+        </table></div>
+      </div>
+      <div>
+        <h3>Key 用量</h3>
+        <div class="card"><table>
+          <thead><tr><th>Key</th><th class="num">请求</th><th class="num">Token</th></tr></thead>
+          <tbody id="keyUsageBody"><tr><td colspan="3" class="empty">暂无数据</td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <h3>请求流水</h3>
+    <div class="card"><table>
+      <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">Token</th></tr></thead>
+      <tbody id="usageRecent"><tr><td colspan="7" class="empty">暂无数据</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <!-- ============ 智能体配置 ============ -->
+  <section class="page" id="page-agents">
+    <h2>智能体接入</h2>
+    <div class="card">
+      <div class="field"><label>网关地址</label><input id="agBase" readonly></div>
+      <div class="field"><label>API Key</label>
+        <select id="agKey"><option value="">（无 Key，网关未启用鉴权）</option></select>
+      </div>
+      <div class="field"><label>模型</label><input id="agModel" readonly></div>
+      <div class="hint">把下面任意一段复制到对应客户端即可。Key 会明文出现在配置里，注意不要提交到仓库。</div>
+    </div>
+
+    <h3>OpenAI SDK / curl</h3>
+    <div class="card"><pre id="snipOpenai"></pre>
+      <div class="row" style="margin-top:10px"><button class="sm" onclick="copySnip('snipOpenai')">复制</button></div>
+    </div>
+
+    <h3>环境变量（Codex / 通用客户端）</h3>
+    <div class="card"><pre id="snipEnv"></pre>
+      <div class="row" style="margin-top:10px"><button class="sm" onclick="copySnip('snipEnv')">复制</button></div>
+    </div>
+
+    <h3>Claude Code（Anthropic 协议）</h3>
+    <div class="card"><pre id="snipClaude"></pre>
+      <div class="row" style="margin-top:10px"><button class="sm" onclick="copySnip('snipClaude')">复制</button></div>
+    </div>
+  </section>
+
+  <!-- ============ 设置 ============ -->
+  <section class="page" id="page-settings">
+    <h2>设置</h2>
+
+    <h3>面板密码</h3>
+    <div class="card">
+      <div class="grid g2">
+        <div class="field"><label>新密码</label><input id="pw1" type="password" placeholder="至少 4 位"></div>
+        <div class="field"><label>确认</label><input id="pw2" type="password"></div>
+      </div>
+      <button class="primary" onclick="changePassword()">保存密码</button>
+      <div class="hint">默认密码 <span class="mono">admin</span>，以 PBKDF2-SHA256（21 万轮）摘要存于 <span class="mono">data/settings.json</span>，不存明文。</div>
+    </div>
+
+    <h3>网关参数</h3>
+    <div class="card">
+      <div class="grid g3">
+        <div class="field"><label>默认区域</label>
+          <select id="setRegion"><option value="cn">国内版</option><option value="intl">国际版</option></select>
+        </div>
+        <div class="field"><label>请求超时 (ms)</label><input id="setTimeout" type="number" min="1000"></div>
+        <div class="field"><label>日志级别</label>
+          <select id="setLogLevel"><option>DEBUG</option><option>INFO</option><option>WARN</option><option>ERROR</option></select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input id="setEnforce" type="checkbox" style="width:auto">
+          <span>强制 API Key 鉴权（关闭时 /v1 不校验 Key，方便本地调试与回归测试）</span>
+        </label>
+      </div>
+      <button class="primary" onclick="saveSettings()">保存</button>
+    </div>
+
+    <h3>数据落盘</h3>
+    <div class="card">
+      <pre id="pathsBox"></pre>
+    </div>
+  </section>
+
+  <!-- ============ 运行日志 ============ -->
+  <section class="page" id="page-logs">
+    <div class="row" style="margin-bottom:14px">
+      <h2 style="margin:0">运行日志</h2>
+      <span class="spacer"></span>
+      <button onclick="loadLogs()">刷新</button>
+    </div>
+    <div id="logBox"></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" class="body" id="dlgForm">
+    <h4 id="dlgTitle">标题</h4>
+    <div id="dlgFields"></div>
+    <div class="row" style="margin-top:16px">
+      <span class="spacer"></span>
+      <button value="cancel">取消</button>
+      <button class="primary" id="dlgOk" value="ok">确定</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------------- 基础设施 ---------------- */
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = (n) => Number(n ?? 0).toLocaleString('zh-CN');
+const fmtTok = (n) => {
+  n = Number(n ?? 0);
+  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return String(n);
+};
+const ago = (iso) => {
+  if (!iso) return '—';
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 60) return Math.round(d) + ' 秒前';
+  if (d < 3600) return Math.round(d/60) + ' 分钟前';
+  if (d < 86400) return Math.round(d/3600) + ' 小时前';
+  return Math.round(d/86400) + ' 天前';
+};
+
+let toastTimer;
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast on' + (isErr ? ' err' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = 'toast'), 2600);
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch('/panel/api' + path, {
+    ...opts,
+    headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
+  });
+  if (r.status === 401) { location.href = '/login'; throw new Error('未登录'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || ('HTTP ' + r.status));
+  return j;
+}
+
+/* ---------------- 页签 ---------------- */
+let currentTab = 'gateway';
+document.querySelectorAll('#nav button').forEach((b) => {
+  b.addEventListener('click', () => showTab(b.dataset.tab));
+});
+function showTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
+  document.querySelectorAll('.page').forEach((p) => p.classList.toggle('on', p.id === 'page-' + tab));
+  if (tab === 'usage') loadUsage();
+  if (tab === 'logs') loadLogs();
+  if (tab === 'settings') loadSettings();
+  if (tab === 'agents') loadAgents();
+  if (tab === 'gateway') { loadAccounts(); loadKeys(); loadOverview(); }
+}
+
+/* ---------------- 概览 ---------------- */
+async function loadOverview() {
+  try {
+    const j = await api('/overview?range=today');
+    $('mode').textContent = j.mode === 'mock' ? '模拟模式' : j.mode === 'proxy' ? '代理模式' : j.mode;
+    const up = j.uptimeSec;
+    const upStr = up > 3600 ? Math.floor(up/3600) + ' 小时' : up > 60 ? Math.floor(up/60) + ' 分钟' : up + ' 秒';
+    $('gwKpi').innerHTML = [
+      ['账号', j.accounts.enabled + ' / ' + j.accounts.total, j.accounts.expired ? j.accounts.expired + ' 个已过期' : '全部有效'],
+      ['API Key', j.keys.enabled + ' / ' + j.keys.total, j.keys.total ? '已启用鉴权' : '未启用鉴权'],
+      ['今日请求', fmt(j.usage.kpi.requests), '累计 ' + fmt(j.counters.requests) + ' 次'],
+      ['今日 Token', fmtTok(j.usage.kpi.totalTokens), '平均 ' + j.usage.kpi.avgDurMs + ' ms'],
+    ].map(([l, v, s]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('');
+
+    const base = location.origin;
+    $('gwUrls').textContent =
+`OpenAI 兼容   ${base}/v1
+Chat          POST ${base}/v1/chat/completions
+Responses     POST ${base}/v1/responses
+Anthropic     POST ${base}/v1/messages
+模型列表      GET  ${base}/v1/models
+健康检查      GET  ${base}/health
+运行时长      ${upStr}`;
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 账号 ---------------- */
+async function loadAccounts() {
+  try {
+    const j = await api('/accounts');
+    const rows = j.accounts ?? [];
+    $('accSummary').textContent = rows.length
+      ? `${rows.filter(a => a.enabled).length} 个启用 / 共 ${rows.length} 个`
+      : '';
+    if (!rows.length) {
+      $('accBody').innerHTML = '<tr><td colspan="8" class="empty">还没有账号，点「+ 添加账号」导入凭据</td></tr>';
+      return;
+    }
+    $('accBody').innerHTML = rows.map((a) => {
+      const st = !a.enabled ? '<span class="pill off">已停用</span>'
+        : a.expired ? '<span class="pill err">已过期</span>'
+        : '<span class="pill ok">可用</span>';
+      return `<tr>
+        <td><strong>${esc(a.name)}</strong>${a.note ? '<div class="hint">' + esc(a.note) + '</div>' : ''}</td>
+        <td>${a.region === 'intl' ? '🌐 国际' : '🇨🇳 国内'}</td>
+        <td class="mono">${esc(a.authType)}</td>
+        <td class="mono">${esc(a.accessKeyIdMasked)}</td>
+        <td>${st}</td>
+        <td class="muted">${a.expiresAt ? new Date(a.expiresAt).toLocaleString('zh-CN') : '—'}</td>
+        <td class="muted">${ago(a.lastUsedAt)}</td>
+        <td class="num">
+          <button class="sm" onclick="toggleAccount('${a.id}',${!a.enabled})">${a.enabled ? '停用' : '启用'}</button>
+          <button class="sm" onclick="editAccount('${a.id}')">编辑</button>
+          <button class="sm danger" onclick="delAccount('${a.id}')">删除</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) { toast(e.message, true); }
+}
+
+function openAccount(pre) {
+  pre = pre || {};
+  openDialog(pre.id ? '编辑账号' : '添加账号', [
+    { k: 'name', label: '名称', value: pre.name ?? '', ph: '例如：主账号' },
+    { k: 'region', label: '区域', type: 'select', value: pre.region ?? 'cn', options: [['cn','🇨🇳 国内版'],['intl','🌐 国际版']] },
+    { k: 'authType', label: '凭据类型', type: 'select', value: pre.authType ?? 'aksk', options: [['aksk','AK/SK'],['oauth','OAuth Token']] },
+    { k: 'accessKeyId', label: 'AccessKey ID', value: '', ph: pre.id ? '（留空表示不修改）' : 'HSTA…' },
+    { k: 'secretAccessKey', label: 'Secret AccessKey', value: '', ph: pre.id ? '（留空表示不修改）' : '' },
+    { k: 'securityToken', label: 'Security Token（STS 临时凭据才需要）', value: '', ph: '可选' },
+    { k: 'note', label: '备注', value: pre.note ?? '', ph: '可选' },
+  ], async (vals) => {
+    for (const k of ['accessKeyId','secretAccessKey','securityToken']) if (!vals[k]) delete vals[k];
+    if (pre.id) await api('/accounts/' + pre.id, { method: 'PATCH', body: JSON.stringify(vals) });
+    else await api('/accounts', { method: 'POST', body: JSON.stringify(vals) });
+    toast(pre.id ? '已保存' : '已添加');
+    loadAccounts(); loadOverview();
+  });
+}
+
+async function editAccount(id) {
+  const j = await api('/accounts');
+  const a = (j.accounts ?? []).find((x) => x.id === id);
+  openAccount(a ?? {});
+}
+async function toggleAccount(id, enabled) {
+  try { await api('/accounts/' + id, { method: 'PATCH', body: JSON.stringify({ enabled }) }); loadAccounts(); loadOverview(); }
+  catch (e) { toast(e.message, true); }
+}
+async function delAccount(id) {
+  if (!confirm('确定删除这个账号？')) return;
+  try { await api('/accounts/' + id, { method: 'DELETE' }); toast('已删除'); loadAccounts(); loadOverview(); }
+  catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- Key ---------------- */
+async function loadKeys() {
+  try {
+    const j = await api('/keys');
+    const rows = (j.keys ?? []).filter((k) => !k.deletedAt);
+    $('keySummary').textContent = rows.length ? `${rows.filter(k=>k.enabled).length} 个启用 / 共 ${rows.length} 个` : '';
+    if (!rows.length) {
+      $('keyBody').innerHTML = '<tr><td colspan="6" class="empty">还没有 Key，网关当前不做鉴权</td></tr>';
+      return;
+    }
+    $('keyBody').innerHTML = rows.map((k) => `<tr>
+      <td><strong>${esc(k.name)}</strong></td>
+      <td class="mono">${esc(k.keyMasked)}</td>
+      <td class="mono">${esc(k.accountRef ?? '跟随全局')}</td>
+      <td class="mono">${esc((k.models||['*']).join(', '))}</td>
+      <td>${k.enabled ? '<span class="pill ok">启用</span>' : '<span class="pill off">停用</span>'}</td>
+      <td class="num">
+        <button class="sm" onclick="copyText('${esc(k.key)}')">复制</button>
+        <button class="sm" onclick="toggleKey('${k.id}',${!k.enabled})">${k.enabled ? '停用' : '启用'}</button>
+        <button class="sm danger" onclick="delKey('${k.id}')">删除</button>
+      </td>
+    </tr>`).join('');
+    const sel = $('agKey');
+    if (sel) {
+      sel.innerHTML = '<option value="">（无 Key）</option>' +
+        rows.filter((k) => k.enabled).map((k) => `<option value="${esc(k.key)}">${esc(k.name)}</option>`).join('');
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+function openKey() {
+  openDialog('生成 API Key', [
+    { k: 'name', label: '名称', value: '', ph: '例如：claude-code' },
+    { k: 'models', label: '模型限制（逗号分隔，支持 *）', value: '*', ph: '留空或 * 表示不限' },
+    { k: 'note', label: '备注', value: '', ph: '可选' },
+  ], async (vals) => {
+    const models = String(vals.models || '*').split(',').map((s) => s.trim()).filter(Boolean);
+    const j = await api('/keys', { method: 'POST', body: JSON.stringify({ name: vals.name, models, note: vals.note }) });
+    toast('已生成：' + j.key.key);
+    loadKeys(); loadOverview();
+  });
+}
+async function toggleKey(id, enabled) {
+  try { await api('/keys/' + id, { method: 'PATCH', body: JSON.stringify({ enabled }) }); loadKeys(); loadOverview(); }
+  catch (e) { toast(e.message, true); }
+}
+async function delKey(id) {
+  if (!confirm('确定删除这个 Key？删除后立即失效。')) return;
+  try { await api('/keys/' + id, { method: 'DELETE' }); toast('已删除'); loadKeys(); loadOverview(); }
+  catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 用量 ---------------- */
+let usageRange = 'today';
+document.querySelectorAll('#rangeSeg button').forEach((b) => {
+  b.addEventListener('click', () => {
+    usageRange = b.dataset.range;
+    document.querySelectorAll('#rangeSeg button').forEach((x) => x.classList.toggle('on', x === b));
+    loadUsage();
+  });
+});
+
+async function loadUsage() {
+  try {
+    const j = await api('/usage?range=' + usageRange);
+    const k = j.kpi;
+    $('usageKpi').innerHTML = [
+      ['请求数', fmt(k.requests), k.errors ? k.errors + ' 个错误' : '无错误'],
+      ['输入 Token', fmtTok(k.promptTokens), '缓存 ' + fmtTok(k.cachedTokens)],
+      ['输出 Token', fmtTok(k.completionTokens), '合计 ' + fmtTok(k.totalTokens)],
+      ['平均耗时', k.avgDurMs + ' ms', j.range],
+    ].map(([l, v, s]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('');
+
+    const total = Math.max(1, k.totalTokens);
+    $('modelBody').innerHTML = (j.models ?? []).length
+      ? j.models.map((m) => `<tr>
+          <td class="mono">${esc(m.name)}</td>
+          <td class="num">${fmt(m.requests)}</td>
+          <td class="num">${fmtTok(m.promptTokens)}</td>
+          <td class="num">${fmtTok(m.completionTokens)}</td>
+          <td class="num">${fmtTok(m.totalTokens)}</td>
+          <td><div class="bar"><i style="width:${Math.round(m.totalTokens/total*100)}%"></i></div></td>
+        </tr>`).join('')
+      : '<tr><td colspan="6" class="empty">暂无数据</td></tr>';
+
+    const mini = (rows, cols) => rows.length
+      ? rows.map((r) => `<tr><td class="mono">${esc(r.name)}</td><td class="num">${fmt(r.requests)}</td><td class="num">${fmtTok(r.totalTokens)}</td></tr>`).join('')
+      : `<tr><td colspan="3" class="empty">暂无数据</td></tr>`;
+    $('accUsageBody').innerHTML = mini(j.accounts ?? []);
+    $('keyUsageBody').innerHTML = mini(j.keys ?? []);
+
+    $('usageRecent').innerHTML = (j.recent ?? []).length
+      ? j.recent.map((r) => `<tr>
+          <td class="muted">${new Date(r.ts).toLocaleString('zh-CN')}</td>
+          <td class="mono">POST</td>
+          <td class="mono">/v1/chat/completions</td>
+          <td class="mono">${esc(r.model)}</td>
+          <td class="num">${r.status >= 400 ? '<span class="pill err">' + r.status + '</span>' : '<span class="pill ok">' + r.status + '</span>'}</td>
+          <td class="num">${r.durMs} ms</td>
+          <td class="num">${fmtTok(r.promptTokens + r.completionTokens)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 智能体 ---------------- */
+async function loadAgents() {
+  const base = location.origin;
+  $('agBase').value = base + '/v1';
+  $('agModel').value = 'mock-thinking';
+  const key = $('agKey').value || '<YOUR_KEY>';
+
+  $('snipOpenai').textContent =
+`curl ${base}/v1/chat/completions \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"mock-thinking","messages":[{"role":"user","content":"你好"}]}'`;
+
+  $('snipEnv').textContent =
+`OPENAI_BASE_URL=${base}/v1
+OPENAI_API_KEY=${key}`;
+
+  $('snipClaude').textContent =
+`ANTHROPIC_BASE_URL=${base}
+ANTHROPIC_AUTH_TOKEN=${key}
+ANTHROPIC_MODEL=mock-thinking`;
+}
+$('agKey')?.addEventListener('change', loadAgents);
+
+function copySnip(id) { copyText($(id).textContent); }
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); toast('已复制'); }
+  catch { toast('复制失败，请手动选择', true); }
+}
+
+/* ---------------- 设置 ---------------- */
+async function loadSettings() {
+  try {
+    const j = await api('/settings');
+    $('setRegion').value = j.settings.region ?? 'cn';
+    $('setTimeout').value = j.settings.requestTimeoutMs ?? 120000;
+    $('setLogLevel').value = j.settings.logLevel ?? 'INFO';
+    $('setEnforce').checked = j.settings.enforceKeys === true;
+    $('pathsBox').textContent =
+`配置   data/settings.json
+用量   data/usage.jsonl
+流水   data/requests.jsonl
+遥测   data/telemetry.jsonl
+凭据   data/credentials.json`;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function saveSettings() {
+  try {
+    await api('/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        region: $('setRegion').value,
+        requestTimeoutMs: Number($('setTimeout').value),
+        logLevel: $('setLogLevel').value,
+        enforceKeys: $('setEnforce').checked,
+      }),
+    });
+    toast('已保存');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function changePassword() {
+  const a = $('pw1').value, b = $('pw2').value;
+  if (!a || a.length < 4) return toast('密码至少 4 位', true);
+  if (a !== b) return toast('两次输入不一致', true);
+  try {
+    await api('/password', { method: 'POST', body: JSON.stringify({ password: a }) });
+    $('pw1').value = $('pw2').value = '';
+    toast('密码已更新');
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 日志 ---------------- */
+async function loadLogs() {
+  try {
+    const j = await api('/logs?limit=200');
+    $('logBox').innerHTML = (j.logs ?? []).length
+      ? j.logs.map((f) => `<div class="card"><div class="row" style="margin-bottom:8px">
+            <strong class="mono">${esc(f.file)}</strong>
+            <span class="spacer"></span><span class="muted">${f.lines.length} 行</span>
+          </div><pre>${esc(f.lines.join('\n'))}</pre></div>`).join('')
+      : '<div class="card"><div class="empty">还没有日志文件</div></div>';
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 对话框 ---------------- */
+let dlgSubmit = null;
+function openDialog(title, fields, onSubmit) {
+  $('dlgTitle').textContent = title;
+  $('dlgFields').innerHTML = fields.map((f) => {
+    if (f.type === 'select') {
+      return `<div class="field"><label>${esc(f.label)}</label><select data-k="${f.k}">` +
+        f.options.map(([v, t]) => `<option value="${esc(v)}"${v === f.value ? ' selected' : ''}>${esc(t)}</option>`).join('') +
+        '</select></div>';
+    }
+    return `<div class="field"><label>${esc(f.label)}</label>
+      <input data-k="${f.k}" value="${esc(f.value ?? '')}" placeholder="${esc(f.ph ?? '')}"></div>`;
+  }).join('');
+  dlgSubmit = onSubmit;
+  $('dlg').showModal();
+}
+
+$('dlgForm').addEventListener('submit', async (ev) => {
+  if (ev.submitter?.value !== 'ok') return;
+  ev.preventDefault();
+  const vals = {};
+  $('dlgFields').querySelectorAll('[data-k]').forEach((el) => (vals[el.dataset.k] = el.value));
+  try { await dlgSubmit(vals); $('dlg').close(); }
+  catch (e) { toast(e.message, true); }
+});
+
+async function logout() {
+  await fetch('/panel/api/logout', { method: 'POST' });
+  location.href = '/login';
+}
+
+/* ---------------- 启动 ---------------- */
+(async () => {
+  try {
+    await api('/session');
+  } catch { return; }
+  loadOverview();
+  loadAccounts();
+  loadKeys();
+  setInterval(loadOverview, 15000);
+})();
+</script>
+</body>
+</html>

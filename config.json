@@ -1,0 +1,138 @@
+{
+  "port": 8787,
+  "host": "127.0.0.1",
+  "mode": "mock",
+  "upstream": {
+    "baseUrl": "http://127.0.0.1:8898",
+    "apiBasePath": "/api/v2",
+    "apiKey": "",
+    "authToken": "",
+    "timeoutMs": 5000,
+    "sk": "SKMOCKHUB0000000000000000000000000000"
+  },
+  "verifySignature": false,
+  "captureCredentials": true,
+  "logBodies": true,
+  "maxBodyBytes": 67108864,
+  "simulate": {
+    "latencyMs": 80,
+    "streamChunkDelayMs": 25,
+    "errorRate": 0,
+    "errorStatus": 500
+  },
+  "identity": {
+    "agentId": "mock-agent-0001",
+    "codeAgentId": "a8bcb36232554267a5142361cc25a393",
+    "userName": "mock-user",
+    "userId": "00000000-0000-0000-0000-000000000001",
+    "domainId": "00000000-0000-0000-0000-0000000000ff",
+    "department": "华为集团",
+    "stationType": "china",
+    "isProd": false
+  },
+  "featureSwitches": {
+    "base_enable": true,
+    "input_output_control": false,
+    "identity_security": false,
+    "permission_security": false
+  },
+  "benefit": {
+    "enabled": true,
+    "balance": 999999,
+    "claimable": true
+  },
+  "privacy": {
+    "collect_data": false
+  },
+  "multimodalModel": "Qwen3.6-27B-VL",
+  "models": [
+    {
+      "model_name": "mock-flagship",
+      "model_type": "admin",
+      "model_parameters": {
+        "model_id": "mock-flagship",
+        "context_window": 128000,
+        "input_length": 96000,
+        "max_tokens": 8192,
+        "thinking_type": null,
+        "enable_queue": false,
+        "third_party_model": ""
+      },
+      "credit": [
+        {
+          "ratio_display": "1x"
+        }
+      ]
+    },
+    {
+      "model_name": "mock-lightweight",
+      "model_type": "admin",
+      "model_parameters": {
+        "model_id": "mock-lightweight",
+        "context_window": 32000,
+        "input_length": 24000,
+        "max_tokens": 4096,
+        "thinking_type": null,
+        "enable_queue": false,
+        "third_party_model": ""
+      },
+      "credit": [
+        {
+          "ratio_display": "0.2x"
+        }
+      ]
+    },
+    {
+      "model_name": "mock-thinking",
+      "model_type": "admin",
+      "model_parameters": {
+        "model_id": "mock-thinking",
+        "context_window": 200000,
+        "input_length": 160000,
+        "max_tokens": 16384,
+        "thinking_type": "auto",
+        "enable_queue": false,
+        "third_party_model": ""
+      },
+      "credit": [
+        {
+          "ratio_display": "2x"
+        }
+      ]
+    },
+    {
+      "model_name": "Qwen3.6-27B-VL",
+      "model_type": "third",
+      "model_parameters": {
+        "model_id": "Qwen3.6-27B-VL",
+        "context_window": 128000,
+        "input_length": 96000,
+        "max_tokens": 8192,
+        "thinking_type": null,
+        "enable_queue": true,
+        "third_party_model": "Qwen3.6-27B-VL"
+      },
+      "credit": [
+        {
+          "ratio_display": "1x"
+        }
+      ]
+    }
+  ],
+  "reply": {
+    "mode": "echo",
+    "prefix": "[mock-hub]",
+    "systemPromptNote": "本条回复由 mock-hub 生成，未经过任何真实模型。"
+  },
+  "telemetry": {
+    "keep": true,
+    "maxRecords": 5000
+  },
+  "capture": {
+    "enabled": true,
+    "port": 443,
+    "host": "0.0.0.0",
+    "pfxPath": "data/certs/capture.pfx",
+    "pfxPass": "mock-hub"
+  }
+}
