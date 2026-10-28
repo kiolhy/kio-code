@@ -159,9 +159,12 @@ jobs:
           $out = (node tools/test-capture.mjs 2>&1 | Out-String)
           Write-Host $out
           if ($LASTEXITCODE -ne 0) {
-            $tail = (($out -split "`r?`n") | Where-Object { $_ -match '✗|Error|error|ECONN|EADDR|Cannot' } | Select-Object -First 6) -join ' || '
-            if (-not $tail) { $tail = (($out -split "`r?`n") | Select-Object -Last 6) -join ' || ' }
-            Write-Host "::error::test-capture 失败（exit=$LASTEXITCODE）：$tail"
+            $tail = (($out -split "`r?`n") | Where-Object { $_ -match '✗|Error|error|ECONN|EADDR|Cannot' } | Select-Object -First 4) -join ' || '
+            if (-not $tail) { $tail = (($out -split "`r?`n") | Select-Object -Last 4) -join ' || ' }
+            $slog = Get-Content 'data/server.log' -Raw -ErrorAction SilentlyContinue
+            $elog = Get-Content 'data/server.err.log' -Raw -ErrorAction SilentlyContinue
+            $snip = { param($t) if ($t) { ($t -replace "`r?`n", ' | ').Substring(0, [Math]::Min(500, $t.Length)) } else { '(空)' } }
+            Write-Host "::error::test-capture 失败：$tail ~~~ server.log: $(& $snip $slog) ~~~ server.err: $(& $snip $elog)"
             exit 1
           }
 
