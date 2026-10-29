@@ -129,10 +129,12 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <div class="card">
       <div class="row" style="margin-bottom:12px">
         <button class="primary" onclick="openAccount()">+ 添加账号</button>
+        <button onclick="oauthAdd()">🔗 授权添加</button>
         <button onclick="loadAccounts()">刷新</button>
         <span class="spacer"></span>
         <span class="muted" id="accSummary"></span>
       </div>
+      <div id="oauthBox" style="display:none;margin-bottom:12px"></div>
       <table>
         <thead><tr>
           <th>名称</th><th>区域</th><th>类型</th><th>AccessKey</th><th>状态</th><th>过期</th><th>最近使用</th><th class="num">操作</th>
@@ -449,6 +451,50 @@ async function loadAccounts() {
       </tr>`;
     }).join('');
   } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 账号池 OAuth 授权添加 ---------------- */
+let oauthTimer;
+async function oauthAdd() {
+  const box = $('oauthBox');
+  clearTimeout(oauthTimer);
+  try {
+    const j = await api('/oauth/start', { method: 'POST', body: '{}' });
+    window.open(j.authorizeUrl, '_blank');
+    box.style.display = 'block';
+    box.innerHTML = `<div class="card" style="padding:12px">
+      <div class="row">
+        <span>🔗 已在浏览器打开登录页，请在华为云完成授权…</span>
+        <span class="spacer"></span>
+        <a href="${esc(j.authorizeUrl)}" target="_blank" rel="noopener">重新打开链接</a>
+      </div>
+      <div class="hint" style="margin-top:6px" id="oauthPoll">等待授权…</div>
+    </div>`;
+    pollOAuth(j.state, 0);
+  } catch (e) {
+    box.style.display = 'block';
+    box.innerHTML = `<div class="hint" style="color:#f85149">${esc(e.message)}</div>`;
+  }
+}
+
+async function pollOAuth(state, n) {
+  clearTimeout(oauthTimer);
+  try {
+    const j = await api('/oauth/status?state=' + encodeURIComponent(state));
+    const p = $('oauthPoll');
+    if (j.done) {
+      if (p) p.textContent = '✅ 已添加账号 ' + (j.name || '');
+      toast('授权账号已入库');
+      loadAccounts();
+      return;
+    }
+    if (n > 60) { if (p) p.textContent = '授权超时未完成，可重新发起'; return; }
+    if (p) p.textContent = '等待授权…（' + n + 's）';
+    oauthTimer = setTimeout(() => pollOAuth(state, n + 2), 2000);
+  } catch (e) {
+    const p = $('oauthPoll');
+    if (p) p.textContent = '查询失败：' + e.message;
+  }
 }
 
 function openAccount(pre) {

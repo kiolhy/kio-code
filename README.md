@@ -465,6 +465,7 @@ data/
 | `stealth.*` | 出站画像 / 代理 / 节流 / 冷却 / TLS，见 [docs/stealth.md](docs/stealth.md) |
 | `github.*` | 在线更新的仓库 / 分支 / OAuth client_id / 代理 / token |
 | `update.*` | 在线更新开关、是否允许一键更新、自动检查间隔，见 [docs/update.md](docs/update.md) |
+| `oauth.*` | 账号池「授权添加」：OAuth 登录 → STS 临时 AK/SK 入库，见 [docs/oauth.md](docs/oauth.md) |
 
 环境变量覆盖：`MOCK_HUB_PORT`、`MOCK_HUB_HOST`、`MOCK_HUB_MODE`、`MOCK_HUB_UPSTREAM`、
 `MOCK_HUB_CONFIG`、`MOCK_HUB_DATA`、`MOCK_HUB_LOG_LEVEL`、`MOCK_HUB_GATEWAY_REGION`、
@@ -476,6 +477,11 @@ data/
 
 面板「维护」页：检测 GitHub 新提交 → 一键更新（下载 tarball → 语法校验 → 备份 → 换文件 → 重启生效，可回滚），
 支持 GitHub 设备码登录（生成链接 + 8 位码授权）与手动 token。详见 [docs/update.md](docs/update.md)。
+
+## 账号授权添加
+
+账号池面板「🔗 授权添加」：生成登录链接 → 华为云 OAuth 授权 → 委托 STS 换临时 AK/SK → 自动入库（`authType=sts`）。
+上游要的是 SDK 签名，SK 是静态密钥，所以只能走 OAuth → STS 拿到临时凭据，详见 [docs/oauth.md](docs/oauth.md)。
 
 ---
 
@@ -497,6 +503,7 @@ mock-hub/
 │   ├── transport.mjs       传输层：头顺序 / TLS 参数 / CONNECT 代理
 │   ├── pacing.mjs          节流：账号并发 / 间隔抖动 / 冷却
 │   ├── gh.mjs              GitHub 客户端：REST / tarball / 设备码登录
+│   ├── oauth.mjs           账号池授权添加：OAuth 授权码 → STS 临时凭据
 │   ├── updater.mjs         在线更新：检查 / 应用 / 回滚
 │   ├── tar.mjs             最小 tar.gz 读写（更新包解包/打包）
 │   ├── version.mjs         版本与本地修订（build-info / .git）
@@ -506,7 +513,8 @@ mock-hub/
 ├── docs/
 │   ├── egress.md           出站面与检测面分析
 │   ├── stealth.md          反代网关的「不像网关」清单
-│   └── update.md           在线更新与 GitHub 授权
+│   ├── update.md           在线更新与 GitHub 授权
+│   └── oauth.md            账号池授权添加（OAuth → STS）
 ├── tools/
 │   ├── selftest.mjs        44 项接口自检
 │   ├── simulate-cli.mjs    完整 CLI 会话模拟
@@ -516,6 +524,7 @@ mock-hub/
 │   ├── test-stealth.mjs    出站指纹 / 节流 / 代理 53 项验证
 │   ├── test-gateway.mjs    网关模式端到端（假上游断言签名与头）
 │   ├── test-update.mjs     在线更新 / 设备码授权 32 项验证
+│   ├── test-oauth.mjs      账号池 OAuth 授权添加 26 项验证
 │   ├── test-capture.mjs    遥测捕获 13 项验证（自签证书 / OTLP / 来源域名）
 │   ├── egress-proxy.mjs    出站代理：不用管理员权限替代 hosts，拦截+捕获
 │   ├── analyze-request.mjs 拆解一条请求：结构 / 工具清单 / 体积分布

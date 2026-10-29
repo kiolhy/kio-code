@@ -16,11 +16,12 @@
   "scripts": {
     "start": "node server.mjs",
     "gateway": "node server.mjs",
-    "test": "node tools/selftest.mjs && node tools/test-tools.mjs && node tools/test-replay.mjs && node tools/test-batch.mjs && node tools/test-panel.mjs && node tools/test-stealth.mjs && node tools/test-gateway.mjs && node tools/test-update.mjs",
+    "test": "node tools/selftest.mjs && node tools/test-tools.mjs && node tools/test-replay.mjs && node tools/test-batch.mjs && node tools/test-panel.mjs && node tools/test-stealth.mjs && node tools/test-gateway.mjs && node tools/test-update.mjs && node tools/test-oauth.mjs",
     "test:gateway": "node tools/test-gateway.mjs",
     "test:stealth": "node tools/test-stealth.mjs",
     "test:panel": "node tools/test-panel.mjs",
-    "test:update": "node tools/test-update.mjs"
+    "test:update": "node tools/test-update.mjs",
+    "test:oauth": "node tools/test-oauth.mjs"
   },
   "dependencies": {},
   "devDependencies": {}

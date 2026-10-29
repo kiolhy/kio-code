@@ -24,6 +24,7 @@ import { createGovernor, parseRetryAfter } from './lib/pacing.mjs';
 import { resolveProfile, findIdentityLeaks } from './lib/stealth.mjs';
 import { createUpdater, UpdateError } from './lib/updater.mjs';
 import { localRevision, shortSha } from './lib/version.mjs';
+import { createOAuth, OAuthError } from './lib/oauth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -74,6 +75,8 @@ const governor = createGovernor({ cfg });
 // 在线更新：检测 GitHub 提交 → 下载 tarball → 校验 → 备份 → 换文件，见 lib/updater.mjs
 const updater = createUpdater({ cfg, rootDir: __dirname, dataDir: DATA_DIR, log });
 const BUILD = localRevision(__dirname);
+// 账号池 OAuth 授权添加（OAuth2 授权码 → STS 临时 AK/SK → 自动入库），见 lib/oauth.mjs
+const oauth = createOAuth({ cfg, panel, log });
 
 function saveConfig() {
   try {
@@ -329,8 +332,35 @@ f.addEventListener('submit',async(ev)=>{
 });
 </script></body></html>`;
 
-async function handlePanelApi(req, res, url, method, reqId, started) {
-  const p = url.pathname.replace(/^\/panel\/api/, '');
+function oauthCallbackHtml(ok, data) {
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const color = ok ? '#3fb950' : '#f85149';
+  const title = ok ? '授权成功，账号已入库' : '授权失败';
+  const body = ok
+    ? `<p style="font-size:14px">账号 <b>${esc(data?.name ?? '')}</b> 已添加（<span class="mono">${esc(data?.accessKeyIdMasked ?? '')}</span> · ${esc(data?.authType ?? '')}）。<br>回到面板点「刷新」即可看到。</p>`
+    : `<p style="font-size:14px;color:#f85149">${esc(data?.error ?? '未知错误')}</p>`;
+  return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} · 码道网关</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--fg:#e6edf3;--dim:#8b949e}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);
+ font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.card{width:420px;padding:28px;background:var(--panel);border:1px solid var(--line);border-radius:12px;text-align:center}
+h1{margin:0 0 12px;font-size:18px;font-weight:600;color:${color}}
+.mono{font-family:ui-monospace,Consolas,monospace}
+a{color:#2f81f7}
+</style></head><body>
+<div class="card">
+  <h1>${title}</h1>
+  ${body}
+  <p style="color:var(--dim);font-size:12px;margin-top:16px">本页可关闭，或 <a href="/">返回面板</a></p>
+</div>
+</body></html>`;
+}
+
+async function handlePanelApi(req, res, url, method, reqId, started) {  const p = url.pathname.replace(/^\/panel\/api/, '');
   const seg = p.split('/').filter(Boolean);
 
   try {
@@ -521,6 +551,18 @@ async function handlePanelApi(req, res, url, method, reqId, started) {
     if (p === '/gh/token' && method === 'DELETE') {
       updater.github.clearToken();
       return void sendJson(res, 200, { ok: true });
+    }
+
+    /* ---- 账号池 OAuth 授权添加 ---- */
+    if (p === '/oauth/start' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const r = await oauth.start({ scope: body.scope, region: body.region });
+      return void sendJson(res, 200, { ok: true, ...r });
+    }
+
+    if (p === '/oauth/status' && method === 'GET') {
+      const state = url.searchParams.get('state');
+      return void sendJson(res, 200, { ok: true, ...oauth.status({ state }) });
     }
 
     /* ---- 运行日志 ---- */
@@ -879,6 +921,19 @@ const requestHandler = async (req, res) => {
   if (url.pathname === '/panel/api/logout' && method === 'POST') {
     panel.dropSession(sessionToken);
     return void sendJson(res, 200, { ok: true }, { 'set-cookie': clearSessionCookie() });
+  }
+
+  // OAuth 授权回调：这是华为云登录成功后的浏览器跳转，不能要求面板登录态
+  if (url.pathname === '/oauth/callback') {
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    try {
+      const r = await oauth.exchange({ code, state });
+      return void sendText(res, 200, oauthCallbackHtml(true, r), 'text/html; charset=utf-8');
+    } catch (e) {
+      const status = e instanceof OAuthError ? (e.status ?? 500) : 500;
+      return void sendText(res, status, oauthCallbackHtml(false, { error: String(e?.message ?? e) }), 'text/html; charset=utf-8');
+    }
   }
 
   if (url.pathname.startsWith('/panel/api/')) {

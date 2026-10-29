@@ -209,5 +209,30 @@
     "allowApply": true,
     "autoCheckMs": 21600000,
     "checkCommits": 10
+  },
+  "oauth": {
+    "enabled": false,
+    "mode": "sts",
+    "authorizeUrl": "https://oauth-login.cloud.huawei.com/oauth2/v2/authorize",
+    "tokenUrl": "https://oauth-login.cloud.huawei.com/oauth2/v2/token",
+    "clientId": "",
+    "clientSecret": "",
+    "redirectUri": "http://127.0.0.1:8787/oauth/callback",
+    "scope": "openid",
+    "region": "cn",
+    "accountNamePrefix": "授权账号",
+    "stateTtlMs": 600000,
+    "proxy": "",
+    "sts": {
+      "endpoint": "https://sts.cn-north-4.myhuaweicloud.com/v1/{domainId}/agency/assume-role",
+      "domainId": "",
+      "agencyName": "",
+      "durationSeconds": 3600,
+      "tokenField": "access_token",
+      "akPath": "credential.access",
+      "skPath": "credential.secret",
+      "tokenPath": "credential.securitytoken",
+      "expiresAtPath": "credential.expires_at"
+    }
   }
 }
