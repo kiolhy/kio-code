@@ -26,6 +26,7 @@ import { createUpdater, UpdateError } from './lib/updater.mjs';
 import { localRevision, shortSha } from './lib/version.mjs';
 import { createOAuth, OAuthError } from './lib/oauth.mjs';
 import { createCodeartsAuth, CodeartsAuthError } from './lib/codearts-auth.mjs';
+import { createAccountInfo } from './lib/account-info.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -80,6 +81,8 @@ const BUILD = localRevision(__dirname);
 const oauth = createOAuth({ cfg, panel, log });
 // 码道真实登录协议（反编译还原：授权码+PKCE+DPoP），见 lib/codearts-auth.mjs
 const codeartsAuth = createCodeartsAuth({ cfg, panel, log });
+// 账号信息探测：可用模型 / 每模型积分 / 剩余积分
+const accountInfo = createAccountInfo({ cfg, log });
 
 function saveConfig() {
   try {
@@ -425,6 +428,25 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       const acc = panel.updateAccount(seg[1], body);
       if (!acc) return void sendJson(res, 404, { error: { code: 'not_found' } });
       return void sendJson(res, 200, { ok: true, account: publicAccountSafe(acc) });
+    }
+
+    if (seg[0] === 'accounts' && seg[1] && seg[2] === 'info') {
+      const acc = panel.findAccount(seg[1]);
+      if (!acc) return void sendJson(res, 404, { error: { code: 'not_found' } });
+      if (method === 'GET') {
+        let cached = null;
+        try {
+          cached = acc.info ? JSON.parse(acc.info) : null;
+        } catch {
+          cached = null;
+        }
+        return void sendJson(res, 200, { ok: true, cached: true, info: cached });
+      }
+      if (method === 'POST') {
+        const info = await accountInfo.probe(acc);
+        panel.updateAccount(acc.id, { info: JSON.stringify(info), infoAt: info.checkedAt });
+        return void sendJson(res, 200, { ok: true, cached: false, info, account: publicAccount(panel.findAccount(acc.id)) });
+      }
     }
 
     if (seg[0] === 'accounts' && seg[1] && seg[2] === 'refresh' && method === 'POST') {

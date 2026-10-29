@@ -374,6 +374,47 @@ dialog h4{margin:0 0 14px;font-size:14px}
   </form>
 </dialog>
 
+<dialog id="oauthDlg">
+  <div class="body">
+    <h4>授权添加账号</h4>
+    <div class="field">
+      <label>授权链接（复制后在浏览器打开，不自动跳转）</label>
+      <div class="row" style="gap:8px">
+        <input id="odLink" readonly style="flex:1" onclick="this.select()" placeholder="生成中…">
+        <button type="button" onclick="copyOauthLink()">复制</button>
+        <button type="button" onclick="openOauthLink()">打开</button>
+      </div>
+    </div>
+    <div class="field" id="odUserCodeRow" style="display:none">
+      <label>登录码</label>
+      <div class="mono" id="odUserCode"></div>
+    </div>
+    <div class="field" id="odCbRow">
+      <label>回调地址（授权后浏览器地址栏那条，整条粘进来）</label>
+      <div class="row" style="gap:8px">
+        <input id="odCb" placeholder="http://127.0.0.1:8787/oauth/callback?code=..." style="flex:1">
+        <button type="button" class="primary" onclick="completeOAuth()">完成授权</button>
+      </div>
+    </div>
+    <div class="hint" id="odStatus">等待授权…</div>
+    <div class="row" style="margin-top:14px">
+      <span class="spacer"></span>
+      <button type="button" onclick="closeOauthDlg()">取消</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="infoDlg">
+  <div class="body" style="min-width:min(760px,92vw)">
+    <h4 id="infoTitle">账号信息</h4>
+    <div id="infoBody" style="max-height:64vh;overflow:auto"></div>
+    <div class="row" style="margin-top:14px">
+      <span class="spacer"></span>
+      <button type="button" onclick="$('infoDlg').close()">关闭</button>
+    </div>
+  </div>
+</dialog>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -486,6 +527,7 @@ async function loadAccounts() {
         <td class="muted">${ago(a.lastUsedAt)}</td>
         <td class="num">
           <button class="sm" onclick="toggleAccount('${a.id}',${!a.enabled})">${a.enabled ? '停用' : '启用'}</button>
+          <button class="sm" onclick="showAccountInfo('${a.id}')">信息${a.modelCount ? `(${a.modelCount})` : ''}</button>
           ${a.canRefresh ? `<button class="sm" onclick="refreshAccount('${a.id}')">续期</button>` : ''}
           <button class="sm" onclick="editAccount('${a.id}')">编辑</button>
           <button class="sm danger" onclick="delAccount('${a.id}')">删除</button>
@@ -495,99 +537,100 @@ async function loadAccounts() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* ---------------- 账号池 OAuth 授权添加 ---------------- */
+/* ---------------- 账号池 OAuth 授权添加（弹窗，不自动跳转） ---------------- */
 let oauthTimer;
-async function oauthAdd() {
-  const box = $('oauthBox');
+
+function closeOauthDlg() {
   clearTimeout(oauthTimer);
+  const d = $('oauthDlg');
+  if (d?.open) d.close();
+}
+
+function openOauthLink() {
+  const v = $('odLink')?.value;
+  if (v) window.open(v, '_blank', 'noopener');
+}
+
+async function oauthAdd() {
+  clearTimeout(oauthTimer);
+  $('odLink').value = '';
+  $('odCb').value = '';
+  $('odStatus').textContent = '正在生成授权链接…';
+  $('odStatus').style.color = '';
+  $('odUserCodeRow').style.display = 'none';
+  $('odCbRow').style.display = 'block';
+  $('oauthDlg').showModal();
   try {
     const j = await api('/oauth/start', { method: 'POST', body: '{}' });
-    window.open(j.authorizeUrl, '_blank');
-
+    $('odLink').value = j.authorizeUrl ?? '';
     if (j.mode === 'codearts') {
-      box.style.display = 'block';
-      box.innerHTML = `<div class="card" style="padding:12px">
-        <div class="row">
-          <span>🔗 已打开码道授权页，登录并同意授权…</span>
-          <span class="spacer"></span>
-          <a href="${esc(j.authorizeUrl)}" target="_blank" rel="noopener">重新打开链接</a>
-        </div>
-        <div class="row" style="margin-top:8px;gap:8px">
-          <input id="oauthLink" readonly value="${esc(j.authorizeUrl)}" onclick="this.select()" style="flex:1">
-          <button onclick="copyOauthLink()">复制授权链接</button>
-        </div>
-        <div class="hint" style="margin-top:4px">链接可以复制到任意浏览器打开。授权后浏览器会跳到 <span class="mono">127.0.0.1</span>，把那条地址复制回下面的输入框即可。</div>
-        <div class="hint" style="margin-top:6px" id="oauthPoll">等待授权…（ticket ${esc(String(j.ticketId || '').slice(0, 8))}）</div>
-        <div class="hint" style="margin-top:10px">
-          如果授权后浏览器停在 <span class="mono">127.0.0.1</span> 打不开的页面（网关在远程），
-          把地址栏整条地址粘到下面：
-        </div>
-        <div class="row" style="margin-top:6px">
-          <input id="oauthCbUrl" placeholder="http://127.0.0.1:8787/oauth/callback?code=..." style="flex:1">
-          <button onclick="completeOAuth()">完成授权</button>
-        </div>
-      </div>`;
+      $('odStatus').textContent = `等待授权…（ticket ${String(j.ticketId || '').slice(0, 8)}）`;
       pollOAuth(j.ticketId, 0);
       return;
     }
-
-    const codeLine = j.userCode ? `<div class="hint" style="margin-top:6px">登录码：<b class="mono">${esc(j.userCode)}</b>（已复制到剪贴板）</div>` : '';
-    box.style.display = 'block';
-    box.innerHTML = `<div class="card" style="padding:12px">
-      <div class="row">
-        <span>🔗 已在浏览器打开登录页，请在华为云完成授权…</span>
-        <span class="spacer"></span>
-        <a href="${esc(j.authorizeUrl)}" target="_blank" rel="noopener">重新打开链接</a>
-      </div>
-      ${codeLine}
-      <div class="hint" style="margin-top:6px" id="oauthPoll">等待授权…</div>
-    </div>`;
-    if (j.userCode && navigator.clipboard) navigator.clipboard.writeText(j.userCode).catch(() => {});
+    if (j.userCode) {
+      $('odUserCode').textContent = j.userCode;
+      $('odUserCodeRow').style.display = 'block';
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(j.userCode).catch(() => {});
+    }
+    $('odStatus').textContent = '等待授权…';
     if (j.deviceCode) pollOAuthDevice(j.deviceCode, 0, Number(j.interval) || 5);
     else pollOAuth(j.state, 0);
   } catch (e) {
-    box.style.display = 'block';
-    box.innerHTML = `<div class="hint" style="color:#f85149">${esc(e.message)}</div>`;
+    $('odStatus').textContent = '生成失败：' + e.message;
+    $('odStatus').style.color = '#f85149';
   }
 }
 
 function copyOauthLink() {
-  const el = $('oauthLink');
-  if (!el) return;
+  const el = $('odLink');
+  if (!el?.value) return;
   el.select();
   const done = () => toast('已复制授权链接');
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(el.value).then(done).catch(() => { document.execCommand('copy'); done(); });
   else { document.execCommand('copy'); done(); }
 }
 
-async function completeOAuth() {  const el = $('oauthCbUrl');
-  const url = (el && el.value || '').trim();
+async function completeOAuth() {
+  const url = ($('odCb')?.value || '').trim();
   if (!url) return toast('先粘贴回调地址', true);
+  $('odStatus').textContent = '正在用授权码换凭据…';
+  $('odStatus').style.color = '';
   try {
     const j = await api('/oauth/complete', { method: 'POST', body: JSON.stringify({ url }) });
-    toast('已添加账号 ' + (j.name || ''));
-    const p = $('oauthPoll');
-    if (p) p.textContent = '✅ 已添加账号 ' + (j.name || '');
-    loadAccounts();
-  } catch (e) { toast(e.message, true); }
+    oauthDone(j.accountId, j.name);
+  } catch (e) {
+    $('odStatus').textContent = '授权失败：' + e.message;
+    $('odStatus').style.color = '#f85149';
+  }
+}
+
+/** 授权成功：关弹窗 → 刷新列表 → 自动读模型/积分 */
+function oauthDone(accountId, name) {
+  clearTimeout(oauthTimer);
+  const st = $('odStatus');
+  if (st) { st.textContent = '✅ 已添加账号 ' + (name || ''); st.style.color = '#3fb950'; }
+  toast('账号已添加，正在读取模型与积分…');
+  loadAccounts();
+  loadOverview();
+  setTimeout(() => {
+    const d = $('oauthDlg');
+    if (d?.open) d.close();
+  }, 700);
+  if (accountId) setTimeout(() => showAccountInfo(accountId), 300);
 }
 
 async function pollOAuth(state, n) {
   clearTimeout(oauthTimer);
   try {
     const j = await api('/oauth/status?state=' + encodeURIComponent(state));
-    const p = $('oauthPoll');
-    if (j.done) {
-      if (p) p.textContent = '✅ 已添加账号 ' + (j.name || '');
-      toast('授权账号已入库');
-      loadAccounts();
-      return;
-    }
-    if (n > 60) { if (p) p.textContent = '授权超时未完成，可重新发起'; return; }
+    const p = $('odStatus');
+    if (j.done) { oauthDone(j.accountId, j.name); return; }
+    if (n > 60) { if (p) p.textContent = '授权超时未完成，可关掉重来'; return; }
     if (p) p.textContent = '等待授权…（' + n + 's）';
     oauthTimer = setTimeout(() => pollOAuth(state, n + 2), 2000);
   } catch (e) {
-    const p = $('oauthPoll');
+    const p = $('odStatus');
     if (p) p.textContent = '查询失败：' + e.message;
   }
 }
@@ -596,20 +639,67 @@ async function pollOAuthDevice(deviceCode, n, interval) {
   clearTimeout(oauthTimer);
   try {
     const j = await api('/oauth/poll', { method: 'POST', body: JSON.stringify({ deviceCode }) });
-    const p = $('oauthPoll');
-    if (j.status === 'success' || j.done) {
-      if (p) p.textContent = '✅ 已添加账号 ' + (j.name || '');
-      toast('授权账号已入库');
-      loadAccounts();
-      return;
-    }
+    const p = $('odStatus');
+    if (j.status === 'success' || j.done) { oauthDone(j.accountId, j.name); return; }
     if (n > 120) { if (p) p.textContent = '授权超时未完成，可重新发起'; return; }
     if (p) p.textContent = '等待授权…（' + n + 's）';
     oauthTimer = setTimeout(() => pollOAuthDevice(deviceCode, n + interval, interval), interval * 1000);
   } catch (e) {
-    const p = $('oauthPoll');
+    const p = $('odStatus');
     if (p) p.textContent = '查询失败：' + e.message;
   }
+}
+
+/* ---------------- 账号信息：可用模型 / 每模型积分 / 剩余积分 ---------------- */
+async function showAccountInfo(id) {
+  $('infoTitle').textContent = '账号信息';
+  $('infoBody').innerHTML = '<div class="hint">正在探测可用模型、每模型积分、剩余积分…</div>';
+  if (!$('infoDlg').open) $('infoDlg').showModal();
+  try {
+    const j = await api('/accounts/' + encodeURIComponent(id) + '/info', { method: 'POST', body: '{}' });
+    renderAccountInfo(j.info);
+    loadAccounts();
+  } catch (e) {
+    $('infoBody').innerHTML = `<div class="hint" style="color:#f85149">探测失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderAccountInfo(info) {
+  if (!info) { $('infoBody').innerHTML = '<div class="hint">没有数据</div>'; return; }
+  const bal = info.balance && Object.keys(info.balance).length
+    ? `<table class="tbl"><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
+      Object.entries(info.balance).map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num">${fmt(v)}</td></tr>`).join('') +
+      `</tbody></table>`
+    : '<div class="hint">接口没返回余额字段（可能是该账号无权益，或字段名不在识别范围内）</div>';
+
+  const models = info.models ?? [];
+  const mtable = models.length
+    ? `<table class="tbl"><thead><tr><th>模型</th><th class="num">积分/次</th><th class="num">额度</th><th>标记</th></tr></thead><tbody>` +
+      models.map((m) => `<tr>
+        <td class="mono">${esc(m.id)}</td>
+        <td class="num">${m.credit == null ? '—' : fmt(m.credit)}</td>
+        <td class="num">${m.limit == null ? '—' : fmt(m.limit)}</td>
+        <td>${m.free ? '免费权益 ' : ''}${m.queued ? '排队 ' : ''}${m.reasoning ? '推理 ' : ''}</td>
+      </tr>`).join('') +
+      `</tbody></table>`
+    : '<div class="hint">没读到模型列表</div>';
+
+  const errs = (info.errors ?? []).length
+    ? `<details style="margin-top:10px"><summary class="hint">探测过程中的失败尝试（${info.errors.length}）</summary>
+        <pre style="white-space:pre-wrap;font-size:11px;color:#8b949e">${esc(info.errors.join('\n'))}</pre></details>`
+    : '';
+
+  const src = Object.entries(info.sources ?? {}).map(([k, v]) => `<div class="hint mono">${esc(k)}: ${esc(v)}</div>`).join('');
+
+  $('infoBody').innerHTML = `
+    <div class="grid g2">
+      <div class="kpi"><div class="label">可用模型</div><div class="value">${info.modelCount ?? models.length}</div><div class="sub">${esc(info.checkedAt ?? '')}</div></div>
+      <div class="kpi"><div class="label">剩余积分合计</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">各余额字段求和</div></div>
+    </div>
+    <h4 style="margin-top:14px">剩余积分</h4>${bal}
+    <h4 style="margin-top:14px">可用模型与价格</h4>${mtable}
+    ${src ? `<h4 style="margin-top:14px">数据来源</h4>${src}` : ''}
+    ${errs}`;
 }
 
 /* ---------------- 导入原版 CLI 的 auth.json ---------------- */

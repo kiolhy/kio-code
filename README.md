@@ -485,6 +485,7 @@ data/
 `codearts.huaweicloud.com/portal/authorize` + PKCE + DPoP → `sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens`）、
 `📥 导入 auth.json`（直接贴原版 CLI 登录产物）。上游要的是 SDK 签名、SK 是静态密钥，所以只能走 OAuth → STS 拿临时凭据。
 码道 OAuth 账号支持**自动续期**：`refresh_token + dpop` 在过期前换新，不用重新登录。
+授权是**弹窗式**的（不自动跳转），成功即自动关闭；随后自动探测该账号的**可用模型、每模型积分、剩余积分**。
 开关在面板「设置 → 账号授权添加」（勾选 + 选模式 + 保存，立即生效，不用改 config.json 也不用重启）。
 详见 [docs/oauth.md](docs/oauth.md)。
 
@@ -510,6 +511,7 @@ mock-hub/
 │   ├── gh.mjs              GitHub 客户端：REST / tarball / 设备码登录
 │   ├── oauth.mjs           账号池授权添加：OAuth 授权码 / 设备码 / auth.json → STS 临时凭据
 │   ├── codearts-auth.mjs   码道真实登录协议（反编译还原：PKCE + DPoP + ticket）
+│   ├── account-info.mjs    账号信息探测：可用模型 / 每模型积分 / 剩余积分
 │   ├── dpop.mjs            DPoP（RFC 9449）：ES256 密钥对 + 证明 JWT
 │   ├── updater.mjs         在线更新：检查 / 应用 / 回滚
 │   ├── tar.mjs             最小 tar.gz 读写（更新包解包/打包）
@@ -532,7 +534,8 @@ mock-hub/
 │   ├── test-gateway.mjs    网关模式端到端（假上游断言签名与头）
 │   ├── test-update.mjs     在线更新 / 设备码授权 32 项验证
 │   ├── test-oauth.mjs      账号池授权添加 56 项验证（含 DPoP / 设备码 / auth.json）
-│   ├── test-codearts-auth.mjs  码道真实登录协议 55 项验证（PKCE/DPoP/ticket/续期）
+│   ├── test-codearts-auth.mjs  码道真实登录协议 57 项验证（PKCE/DPoP/ticket/续期）
+│   ├── test-account-info.mjs   账号信息探测 28 项验证（余额/模型/积分/签名）
 │   ├── test-capture.mjs    遥测捕获 13 项验证（自签证书 / OTLP / 来源域名）
 │   ├── egress-proxy.mjs    出站代理：不用管理员权限替代 hosts，拦截+捕获
 │   ├── analyze-request.mjs 拆解一条请求：结构 / 工具清单 / 体积分布

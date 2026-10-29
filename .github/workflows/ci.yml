@@ -172,6 +172,7 @@ jobs:
           docker exec gw-ci node tools/test-update.mjs
           docker exec gw-ci node tools/test-oauth.mjs
           docker exec gw-ci node tools/test-codearts-auth.mjs
+          docker exec gw-ci node tools/test-account-info.mjs
           echo "镜像自检通过"
 
       - name: 收尾

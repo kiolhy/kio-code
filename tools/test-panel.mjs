@@ -220,6 +220,12 @@ console.log('\n\x1b[1m[5] 在线更新与 GitHub 状态\x1b[0m');
 
   const rf = await req('/panel/api/accounts/no-such-id/refresh', { method: 'POST', headers: H, body: '{}' });
   ok('续期未知账号 404', rf.status === 404, String(rf.status));
+
+  const inf404 = await req('/panel/api/accounts/no-such-id/info', { method: 'GET', headers: H });
+  ok('账号信息未知账号 404', inf404.status === 404, String(inf404.status));
+
+  const inf = await req('/panel/api/accounts/' + accId + '/info', { headers: H });
+  ok('账号信息 GET 返回缓存位（不打网络）', inf.status === 200 && inf.body?.cached === true, `${inf.status}/${inf.body?.cached}`);
 }
 
 console.log('\n\x1b[1m[6] 授权添加开关（面板设置里开启）\x1b[0m');

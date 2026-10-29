@@ -92,6 +92,44 @@
 接口：`GET /panel/api/settings` 返回 `effective: { enabled, mode }` 与 `modes`；`PATCH /panel/api/settings`
 带 `{ "oauth": { "enabled": true, "mode": "codearts", "refreshEnabled": true } }`，非法 `mode` 返回 400 `bad_oauth_mode`。
 
+## 弹窗授权（不自动跳转）
+
+点「🔗 授权添加」只弹窗，不会自动开新标签页：
+
+1. 弹窗里给出**只读授权链接**，可「复制」或手动点「打开」
+2. 浏览器授权后跳到 `127.0.0.1:<port>/oauth/callback?code=…`，把整条地址粘进「回调地址」→「完成授权」
+3. 成功即**弹窗自动关闭**，列表刷新，并自动开始读取账号信息
+
+## 账号信息：可用模型 / 价格 / 剩余积分
+
+授权成功或点账号行的「信息」按钮，会调用 `POST /panel/api/accounts/{id}/info` 探测：
+
+| 数据 | 端点 | 解析 |
+|---|---|---|
+| 剩余积分 / 余额 | `{benefit}/api/v1/user/tokens/balance` | 广度扫描 `*balance* / *remain* / *token* / *credit* / *point*` 等数值字段 |
+| 免费权益模型 | `{benefit}/api/v1/gateway/config` → `{ endpoint, models[] }` | 抽出 `id`，标 `free: true` |
+| 模型 + 每模型积分 | `{agent-center}/v1/agent-center/agents/useragents` → `detail?agent_id=` → `data.gpts.models[]` | 抽出 `{ id, credit, limit, reasoning, enable_queue }`，同 id 以这里的 `credit` 为准 |
+
+- 鉴权：`SDK-HMAC-SHA256`（`lib/sign.mjs`）+ `X-Security-Token` + `app-id: CodeAgent3.0`
+- 域名会随环境变，`accountInfo.bases` 是候选列表，逐个试，能通的记进 `sources`
+- 探测结果存进账号（`info` / `infoAt`），列表显示模型数，点开看明细
+- 失败的尝试不吞掉：弹窗底部「探测过程中的失败尝试」会列出每个 base 的 HTTP 码与响应片段
+
+```jsonc
+"accountInfo": {
+  "bases": ["https://opengw.developer.huaweicloud.com",
+            "https://snapengine-apig.cn-north-7.myhuaweicloud.com",
+            "https://snap-access.cn-north-4.myhuaweicloud.com"],
+  "appId": "CodeAgent3.0",
+  "codeAgentId": "a8bcb36232554267a5142361cc25a393",
+  "timeoutMs": 20000
+}
+```
+
+> 端点与字段名来自反编译还原（`docs/codearts-reverse-engineering.md` §6 §7.1）。真实账号返回的字段名
+> 若有出入，把弹窗里那段「失败尝试」贴出来，按实际响应改 `pickBalance` / `pickModels` 即可——
+> 解析是宽松的广度扫描，不依赖固定路径。
+
 ## 码道真实登录协议（`mode: "codearts"`，走真实网络）
 
 从 `agentkernel.exe`（Bun 编译产物）反编译还原的 auth 模块，**不是模拟**，端点/参数全部是真实值：
@@ -229,6 +267,7 @@ POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
 ```bash
 npm run test:oauth      # 56 项：链接生成 / code→STS→入库 / 轮询 / 错误路径 / DPoP / 设备码 / auth.json 导入
 npm run test:codearts   # 57 项：真实授权链接 / PKCE / DPoP 请求形状 / code→token / secret→ticket / 续期 / 批量续期 / 回调容错 / 错误路径
+npm run test:account-info  # 28 项：余额解析 / 模型与积分解析 / 签名与请求头 / 合并优先级 / 失败降级
 ```
 
 `tools/test-oauth.mjs` / `tools/test-codearts-auth.mjs` 用本地假服务器跑全程（校验请求形状与签名），不碰真实网络。
