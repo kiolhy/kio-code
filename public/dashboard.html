@@ -217,15 +217,15 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <div class="hint" id="modelsHint" style="margin:10px 0"></div>
     <div class="card"><table>
       <thead><tr>
-        <th>模型</th><th class="num">价格（积分/次）</th><th class="num">额度</th><th>标记</th><th>可用账号</th>
+        <th>模型</th><th>价格（积分/千 token）</th><th class="num">上下文</th><th class="num">最大输出</th><th>能力</th><th>可用账号</th>
       </tr></thead>
-      <tbody id="modelsBody"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+      <tbody id="modelsBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
     </table></div>
 
     <h3>账号探测状态</h3>
     <div class="card"><table>
-      <thead><tr><th>账号</th><th class="num">模型</th><th class="num">剩余积分</th><th>最近探测</th><th class="num">操作</th></tr></thead>
-      <tbody id="modelsAccBody"><tr><td colspan="5" class="empty">—</td></tr></tbody>
+      <thead><tr><th>账号</th><th class="num">模型</th><th class="num">智能体</th><th class="num">剩余积分</th><th>最近探测</th><th class="num">操作</th></tr></thead>
+      <tbody id="modelsAccBody"><tr><td colspan="6" class="empty">—</td></tr></tbody>
     </table></div>
   </section>
 
@@ -724,31 +724,42 @@ function renderAccountInfo(info) {
   const models = info.models ?? [];
   const numbers = info.numbers ?? [];
   const bal = info.balance && Object.keys(info.balance).length ? info.balance : null;
-  const pct = (v) => (v == null ? '<span class="muted">—</span>' : v + '%');
+  const user = info.user;
+
+  const priceCell = (m) => {
+    const t = m.tiers ?? [];
+    if (!t.length) return '<span class="muted">—</span>';
+    if (t.length === 1) {
+      return `<span class="mono">入 ${t[0].input ?? '—'} / 缓存 ${t[0].cache ?? '—'} / 出 ${t[0].output ?? '—'}</span>`;
+    }
+    return t.map((x) => `<div class="mono" style="font-size:11px">≤${x.inputTo < 0 ? '∞' : x.inputTo}：入 ${x.input} / 缓存 ${x.cache} / 出 ${x.output}</div>`).join('');
+  };
+
+  const mtable = models.length
+    ? `<table><thead><tr>
+        <th>模型</th><th>别名</th><th>价格（积分/千 token）</th>
+        <th class="num">上下文</th><th class="num">最大输出</th><th>能力</th>
+      </tr></thead><tbody>` +
+      models.map((m) => `<tr>
+        <td class="mono">${esc(m.id)}</td>
+        <td class="mono hint">${esc(m.alias ?? '—')}</td>
+        <td>${priceCell(m)}</td>
+        <td class="num">${m.contextWindow == null ? '—' : fmt(m.contextWindow)}</td>
+        <td class="num">${m.maxTokens == null ? '—' : fmt(m.maxTokens)}</td>
+        <td>${m.promptCache ? '<span class="pill ok">缓存</span> ' : ''}${m.queue ? '<span class="pill">排队</span>' : ''}</td>
+      </tr>`).join('') +
+      '</tbody></table>'
+    : '<div class="hint">没读到模型列表</div>';
+
+  const userLine = user
+    ? `<div class="hint mono">${esc(user.userName ?? '')} · ${esc(user.domainName ?? '')}</div>`
+    : '';
 
   const balTable = bal
     ? `<table><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
       Object.entries(bal).map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num">${fmt(v)}</td></tr>`).join('') +
       '</tbody></table>'
-    : '<div class="hint">没认出余额字段（下面「响应里的数字字段」是兜底清单）</div>';
-
-  const numTable = numbers.length
-    ? `<details ${bal ? '' : 'open'} style="margin-top:8px"><summary class="hint">响应里的数字字段（${numbers.length}）</summary>
-        <table style="margin-top:6px"><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
-      numbers.map((x) => `<tr><td class="mono">${esc(x.path)}</td><td class="num">${fmt(x.value)}</td></tr>`).join('') +
-      '</tbody></table></details>'
-    : '';
-
-  const mtable = models.length
-    ? `<table><thead><tr><th>模型</th><th class="num">积分/次</th><th class="num">额度</th><th>标记</th></tr></thead><tbody>` +
-      models.map((m) => `<tr>
-        <td class="mono">${esc(m.id)}</td>
-        <td class="num">${m.credit == null ? '—' : fmt(m.credit)}</td>
-        <td class="num">${m.limit == null ? '—' : fmt(m.limit)}</td>
-        <td>${m.free ? '免费权益 ' : ''}${m.queued ? '排队 ' : ''}${m.reasoning ? '推理 ' : ''}</td>
-      </tr>`).join('') +
-      '</tbody></table>'
-    : '<div class="hint">没读到模型列表</div>';
+    : '<div class="hint">该账号没有 benefit 套餐，余额接口返回业务拒绝（模型与价格不受影响）</div>';
 
   const rawKeys = Object.keys(info.raw ?? {});
   const rawBlock = rawKeys.length
@@ -765,18 +776,15 @@ function renderAccountInfo(info) {
         <pre style="white-space:pre-wrap;font-size:11px;color:#8b949e;margin-top:6px">${esc(info.errors.join('\n'))}</pre></details>`
     : '';
 
-  const warn = info.ok === false
-    ? `<div class="hint" style="color:#d29922;margin-bottom:10px">探测没有拿到可用字段，但下面保留了原始响应——把「原始响应」贴出来就能按真实结构校准解析。</div>`
-    : '';
-
   $('infoBody').innerHTML = `
-    ${warn}
-    <div class="grid g2" style="margin-bottom:12px">
+    <div class="grid g3" style="margin-bottom:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
       <div class="kpi"><div class="label">可用模型</div><div class="value">${info.modelCount ?? models.length}</div><div class="sub">${esc(info.checkedAt ?? '')}</div></div>
-      <div class="kpi"><div class="label">剩余积分合计</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">剩余类字段求和</div></div>
+      <div class="kpi"><div class="label">智能体</div><div class="value">${info.agentCount ?? 0}</div><div class="sub">${esc(String(info.agentId ?? '').slice(0, 12))}…</div></div>
+      <div class="kpi"><div class="label">剩余积分</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">benefit 套餐才有</div></div>
     </div>
-    <h4>剩余积分</h4>${balTable}${numTable}
-    <h4 style="margin-top:16px">可用模型与价格</h4>${mtable}
+    ${userLine}
+    <h4 style="margin-top:14px">可用模型与价格</h4>${mtable}
+    <h4 style="margin-top:16px">剩余积分</h4>${balTable}
     ${src ? `<h4 style="margin-top:16px">数据来源</h4>${src}` : ''}
     ${rawBlock}
     ${errs}`;
@@ -794,24 +802,33 @@ async function loadModels() {
       : '还没有模型数据：到「网关与账号」给账号点「信息」探测一次，或点右上「重新探测全部账号」。';
 
     $('modelsBody').innerHTML = models.length
-      ? models.map((m) => `<tr>
-          <td class="mono">${esc(m.id)}</td>
-          <td class="num">${m.credit == null ? '<span class="muted">—</span>' : fmt(m.credit)}</td>
-          <td class="num">${m.limit == null ? '<span class="muted">—</span>' : fmt(m.limit)}</td>
-          <td>${m.free ? '<span class="pill ok">免费权益</span> ' : ''}${m.queued ? '<span class="pill">排队</span> ' : ''}${m.reasoning ? '<span class="pill">推理</span>' : ''}</td>
-          <td class="hint">${esc((m.accounts ?? []).join('、'))}</td>
-        </tr>`).join('')
-      : '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+      ? models.map((m) => {
+          const t = m.tiers ?? [];
+          const price = !t.length ? '<span class="muted">—</span>'
+            : t.length === 1
+              ? `<span class="mono">入 ${t[0].input ?? '—'} / 缓存 ${t[0].cache ?? '—'} / 出 ${t[0].output ?? '—'}</span>`
+              : t.map((x) => `<div class="mono" style="font-size:11px">≤${x.inputTo < 0 ? '∞' : fmt(x.inputTo)}：入 ${x.input} / 缓存 ${x.cache} / 出 ${x.output}</div>`).join('');
+          return `<tr>
+            <td class="mono">${esc(m.id)}${m.alias ? `<div class="hint mono">${esc(m.alias)}</div>` : ''}</td>
+            <td>${price}</td>
+            <td class="num">${m.contextWindow == null ? '<span class="muted">—</span>' : fmt(m.contextWindow)}</td>
+            <td class="num">${m.maxTokens == null ? '<span class="muted">—</span>' : fmt(m.maxTokens)}</td>
+            <td>${m.promptCache ? '<span class="pill ok">缓存</span> ' : ''}${m.queue ? '<span class="pill">排队</span>' : ''}</td>
+            <td class="hint">${esc((m.accounts ?? []).join('、'))}</td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="6" class="empty">暂无数据</td></tr>';
 
     $('modelsAccBody').innerHTML = accs.length
       ? accs.map((a) => `<tr>
-          <td><strong>${esc(a.name)}</strong>${a.enabled ? '' : ' <span class="pill off">已停用</span>'}</td>
+          <td><strong>${esc(a.name)}</strong>${a.enabled ? '' : ' <span class="pill off">已停用</span>'}${a.user?.userName ? `<div class="hint mono">${esc(a.user.userName)}</div>` : ''}</td>
           <td class="num">${fmt(a.modelCount)}</td>
+          <td class="num">${fmt(a.agentCount ?? 0)}</td>
           <td class="num">${a.balanceTotal == null ? '<span class="muted">—</span>' : fmt(a.balanceTotal)}</td>
           <td class="muted">${a.checkedAt ? new Date(a.checkedAt).toLocaleString('zh-CN') : '未探测'}</td>
           <td class="num"><button class="sm" onclick="probeAccount('${a.id}')">探测</button></td>
         </tr>`).join('')
-      : '<tr><td colspan="5" class="empty">还没有账号</td></tr>';
+      : '<tr><td colspan="6" class="empty">还没有账号</td></tr>';
   } catch (e) { toast(e.message, true); }
 }
 
