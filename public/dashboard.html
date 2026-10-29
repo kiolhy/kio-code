@@ -223,6 +223,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
     </div>
 
     <div class="grid g4" id="reqKpi" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))"></div>
+    <div class="hint" id="reqCacheNote" style="margin:-6px 0 14px"></div>
 
     <div class="card">
       <div class="row">
@@ -1410,6 +1411,19 @@ async function loadRequests() {
       ['每千 Token', s.creditPerKTok == null ? '—' : s.creditPerKTok, '平均积分成本'],
     ].map(([l, v, sub]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join('');
 
+    // 缓存口径说明：区分「支持缓存的请求」和「该模型压根不返回缓存字段」
+    const cacheNote = $('reqCacheNote');
+    if (cacheNote) {
+      const parts = [];
+      if (s.cacheEligible) {
+        parts.push(`参与缓存 ${fmt(s.cacheEligible)} 条：命中 ${fmt(s.cacheHitReqs)}、未命中 ${fmt(s.cacheMissReqs)}，命中率 ${s.cacheHitRate ?? '—'}%，按命中 token 算 ${s.cachePctEligible ?? '—'}%`);
+      }
+      if (s.cacheAbsentReqs) {
+        parts.push(`${fmt(s.cacheAbsentReqs)} 条上游没返回缓存字段（该模型不支持缓存，不计入命中率）`);
+      }
+      cacheNote.textContent = parts.length ? parts.join(' · ') : '暂无缓存数据';
+    }
+
     // 筛选项：只在第一次或候选变化时重建，避免把用户选中的值冲掉
     const fill = (id, list, cur) => {
       const el = $(id);
@@ -1426,6 +1440,16 @@ async function loadRequests() {
     fill('reqKey', j.facets?.keys ?? [], $('reqKey').value);
 
     const pct = (v) => (v == null ? '<span class="muted">—</span>' : v + '%');
+    // 缓存列：命中显示绿色百分比，明确 0 显示 0%，上游没字段显示「不支持」
+    const cacheCell = (r) => {
+      if (r.cacheState === 'absent') {
+        return '<span class="muted" title="上游没有返回缓存字段，该模型不参与缓存">不支持</span>';
+      }
+      if (r.cacheState === 'hit') {
+        return `<span style="color:var(--ok)">${r.cachePct}%</span>`;
+      }
+      return '<span class="muted" title="上游明确返回 cached_tokens=0，本次未命中">0%</span>';
+    };
     const rows = j.rows ?? [];
     $('reqBody').innerHTML = rows.length
       ? rows.map((r) => {
@@ -1435,6 +1459,9 @@ async function loadRequests() {
           const credit = r.credit == null
             ? '<span class="muted" title="该模型没有价格数据">—</span>'
             : fmtCredit(r.credit);
+          const cachedCell = r.cacheState === 'absent'
+            ? '<span class="muted">—</span>'
+            : (r.cachedTokens ? fmtTok(r.cachedTokens) : '<span class="muted">0</span>');
           return `<tr>
             <td class="muted mono">${new Date(r.ts).toLocaleString('zh-CN')}</td>
             <td class="mono">${esc(r.model)}${est}${stream}</td>
@@ -1444,8 +1471,8 @@ async function loadRequests() {
             <td class="num">${r.durMs} ms</td>
             <td class="num">${fmtTok(r.promptTokens)}</td>
             <td class="num">${fmtTok(r.completionTokens)}</td>
-            <td class="num">${r.cachedTokens ? fmtTok(r.cachedTokens) : '<span class="muted">0</span>'}</td>
-            <td class="num">${pct(r.cachePct)}</td>
+            <td class="num">${cachedCell}</td>
+            <td class="num">${cacheCell(r)}</td>
             <td class="num"><b>${credit}</b></td>
             <td class="num muted">${r.creditSaved ? fmtCredit(r.creditSaved) : '—'}</td>
           </tr>`;

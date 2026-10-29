@@ -106,6 +106,68 @@ console.log('\n\x1b[1m[3] 落库与聚合（真实 panel）\x1b[0m');
   fs.rmSync(dataDir, { recursive: true, force: true });
 }
 
+
+console.log('\n\x1b[1m[6] cacheState：区分「未命中」和「不支持缓存」\x1b[0m');
+{
+  // 命中
+  const a = extractCache({ prompt_tokens: 1000, prompt_tokens_details: { cached_tokens: 600 } });
+  ok('有命中数 → hit', a.cacheState === 'hit', a.cacheState);
+  ok('命中数正确', a.cachedTokens === 600, String(a.cachedTokens));
+  ok('命中比例正确', Math.abs(a.hitRatio - 0.6) < 1e-9, String(a.hitRatio));
+
+  // 上游明确返回 0（GLM / 盘古这类）
+  const b = extractCache({ prompt_tokens: 1000, prompt_tokens_details: { cached_tokens: 0 } });
+  ok('字段存在但为 0 → zero', b.cacheState === 'zero', b.cacheState);
+  ok('zero 时 cachedTokens 为 0', b.cachedTokens === 0);
+
+  // 上游压根没这个字段（DeepSeek 首次请求）
+  const c = extractCache({ prompt_tokens: 1000 });
+  ok('没有字段 → absent', c.cacheState === 'absent', c.cacheState);
+  ok('absent 时 cachedTokens 为 0', c.cachedTokens === 0);
+
+  // 空 details 对象（kimi 首次请求返回 prompt_tokens_details: {}）
+  const d = extractCache({ prompt_tokens: 1000, prompt_tokens_details: {} });
+  ok('空 details 对象 → absent', d.cacheState === 'absent', d.cacheState);
+
+  // 其它字段名也要能识别成 hit
+  const e = extractCache({ prompt_tokens: 500, prompt_cache_hit_tokens: 400 });
+  ok('prompt_cache_hit_tokens → hit', e.cacheState === 'hit' && e.cachedTokens === 400, e.cacheState);
+
+  const f = extractCache({ prompt_tokens: 500, cache_read_input_tokens: 300 });
+  ok('cache_read_input_tokens → hit', f.cacheState === 'hit' && f.cachedTokens === 300, f.cacheState);
+
+  // 负数 / 非法值不该当成命中
+  const g = extractCache({ prompt_tokens: 100, prompt_tokens_details: { cached_tokens: -5 } });
+  ok('负数不算命中', g.cacheState === 'absent', g.cacheState);
+}
+
+console.log('\n\x1b[1m[7] 落盘时 credit 取整\x1b[0m');
+{
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'kio-cache2-'));
+  fs.mkdirSync(path.join(dir2, 'data'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir2, 'data', 'settings.json'),
+    JSON.stringify({
+      panel: { password: null, changed: false },
+      accounts: [{
+        id: 'a1', name: 'acc', enabled: true, region: 'cn',
+        accessKeyId: 'AK', secretAccessKey: 'SK', securityToken: 'TOK',
+        info: { models: [{ id: 'M', name: 'M', alias: 'M', tiers: [{ inputFrom: 0, inputTo: -1, outputFrom: 0, outputTo: -1, input: 3.7, cache: 0.9, output: 11.3 }] }] },
+      }],
+      apiKeys: [], proxies: [], settings: {},
+    })
+  );
+  const p2 = createPanel({ dataDir: path.join(dir2, 'data') });
+  p2.recordUsage({ model: 'M', promptTokens: 777, completionTokens: 333, cachedTokens: 0, status: 200, durMs: 10 });
+  const rows = fs.readFileSync(path.join(dir2, 'data', 'usage.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const r = rows[0];
+  ok('落盘 credit 是有限数', typeof r.credit === 'number' && Number.isFinite(r.credit), String(r.credit));
+  ok('落盘 credit 最多 4 位小数',
+    String(r.credit).split('.')[1]?.length <= 4, String(r.credit));
+  ok('落盘带 cacheState', typeof r.cacheState === 'string', r.cacheState);
+  fs.rmSync(dir2, { recursive: true, force: true });
+}
+
 console.log('');
 const color = fail === 0 ? '\x1b[32m' : '\x1b[31m';
 console.log(`${color}结果：${pass} 通过\x1b[0m，${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${fail} 失败\x1b[0m`);
