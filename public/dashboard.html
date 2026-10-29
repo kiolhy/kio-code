@@ -81,9 +81,11 @@ pre{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:12
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
 .seg button{border:0;border-radius:0;background:none;color:var(--dim);padding:5px 12px}
 .seg button.on{background:var(--accent);color:#fff;font-weight:600}
-dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:0;width:440px;max-width:92vw}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:0;width:440px;max-width:92vw;max-height:88vh}
+dialog.wide{width:min(920px,94vw)}
 dialog::backdrop{background:#0008}
-dialog .body{padding:18px}
+dialog .body{padding:18px;display:flex;flex-direction:column;max-height:88vh;box-sizing:border-box}
+dialog .body>.scroll{flex:1;min-height:0;overflow:auto;padding-right:4px}
 dialog h4{margin:0 0 14px;font-size:14px}
 .field{margin-bottom:11px}
 .field label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
@@ -99,6 +101,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
   <nav id="nav">
     <button data-tab="gateway" class="on">网关与账号</button>
     <button data-tab="usage">数据看板</button>
+    <button data-tab="models">模型</button>
     <button data-tab="agents">智能体配置</button>
     <button data-tab="settings">设置</button>
     <button data-tab="maint">维护</button>
@@ -200,6 +203,29 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <div class="card"><table>
       <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">Token</th><th class="num">缓存</th></tr></thead>
       <tbody id="usageRecent"><tr><td colspan="8" class="empty">暂无数据</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <!-- ============ 模型与价格 ============ -->
+  <section class="page" id="page-models">
+    <div class="row">
+      <h2 style="margin:0">模型与价格</h2>
+      <span class="spacer"></span>
+      <button class="primary" onclick="refreshModels(this)">重新探测全部账号</button>
+      <button onclick="loadModels()">刷新</button>
+    </div>
+    <div class="hint" id="modelsHint" style="margin:10px 0"></div>
+    <div class="card"><table>
+      <thead><tr>
+        <th>模型</th><th class="num">价格（积分/次）</th><th class="num">额度</th><th>标记</th><th>可用账号</th>
+      </tr></thead>
+      <tbody id="modelsBody"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+    </table></div>
+
+    <h3>账号探测状态</h3>
+    <div class="card"><table>
+      <thead><tr><th>账号</th><th class="num">模型</th><th class="num">剩余积分</th><th>最近探测</th><th class="num">操作</th></tr></thead>
+      <tbody id="modelsAccBody"><tr><td colspan="5" class="empty">—</td></tr></tbody>
     </table></div>
   </section>
 
@@ -404,10 +430,14 @@ dialog h4{margin:0 0 14px;font-size:14px}
   </div>
 </dialog>
 
-<dialog id="infoDlg">
-  <div class="body" style="min-width:min(760px,92vw)">
-    <h4 id="infoTitle">账号信息</h4>
-    <div id="infoBody" style="max-height:64vh;overflow:auto"></div>
+<dialog id="infoDlg" class="wide">
+  <div class="body">
+    <div class="row" style="margin-bottom:12px">
+      <h4 id="infoTitle" style="margin:0">账号信息</h4>
+      <span class="spacer"></span>
+      <button type="button" class="sm" onclick="copyInfoRaw()">复制原始响应</button>
+    </div>
+    <div id="infoBody" class="scroll" style="max-height:70vh"></div>
     <div class="row" style="margin-top:14px">
       <span class="spacer"></span>
       <button type="button" onclick="$('infoDlg').close()">关闭</button>
@@ -468,6 +498,7 @@ function showTab(tab) {
   document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   document.querySelectorAll('.page').forEach((p) => p.classList.toggle('on', p.id === 'page-' + tab));
   if (tab === 'usage') loadUsage();
+  if (tab === 'models') loadModels();
   if (tab === 'logs') loadLogs();
   if (tab === 'settings') loadSettings();
   if (tab === 'maint') loadMaint();
@@ -506,6 +537,12 @@ async function loadAccounts() {
   try {
     const j = await api('/accounts');
     const rows = j.accounts ?? [];
+    // 账号维度的缓存比例（来自用量聚合，按账号名对齐）
+    const cacheBy = {};
+    try {
+      const u = await api('/usage?range=all');
+      for (const a of u.accounts ?? []) cacheBy[a.name] = a.cachePct;
+    } catch { /* 用量接口失败不影响账号列表 */ }
     $('accSummary').textContent = rows.length
       ? `${rows.filter(a => a.enabled).length} 个启用 / 共 ${rows.length} 个`
       : '';
@@ -517,8 +554,15 @@ async function loadAccounts() {
       const st = !a.enabled ? '<span class="pill off">已停用</span>'
         : a.expired ? '<span class="pill err">已过期</span>'
         : '<span class="pill ok">可用</span>';
+      const chips = [];
+      if (a.balanceTotal != null) chips.push(`<span class="pill ok">积分 ${fmt(a.balanceTotal)}</span>`);
+      if (a.modelCount) chips.push(`<span class="pill">模型 ${a.modelCount}</span>`);
+      if (cacheBy[a.name] != null) chips.push(`<span class="pill">缓存 ${cacheBy[a.name]}%</span>`);
+      const chipLine = chips.length
+        ? `<div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">${chips.join('')}</div>`
+        : '';
       return `<tr>
-        <td><strong>${esc(a.name)}</strong>${a.note ? '<div class="hint">' + esc(a.note) + '</div>' : ''}</td>
+        <td><strong>${esc(a.name)}</strong>${a.note ? '<div class="hint">' + esc(a.note) + '</div>' : ''}${chipLine}</td>
         <td>${a.region === 'intl' ? '🌐 国际' : '🇨🇳 国内'}${a.proxy ? ' <span class="pill ok">代理</span>' : ''}</td>
         <td class="mono">${esc(a.authType)}</td>
         <td class="mono">${esc(a.accessKeyIdMasked)}</td>
@@ -664,42 +708,132 @@ async function showAccountInfo(id) {
   }
 }
 
+let lastInfoRaw = '';
+function copyInfoRaw() {
+  const t = lastInfoRaw;
+  if (!t) return toast('没有原始响应可复制', true);
+  const done = () => toast('已复制原始响应');
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(t).then(done).catch(() => toast('复制失败，请手动选中', true));
+  else toast('复制失败，请手动选中', true);
+}
+
 function renderAccountInfo(info) {
   if (!info) { $('infoBody').innerHTML = '<div class="hint">没有数据</div>'; return; }
-  const bal = info.balance && Object.keys(info.balance).length
-    ? `<table class="tbl"><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
-      Object.entries(info.balance).map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num">${fmt(v)}</td></tr>`).join('') +
-      `</tbody></table>`
-    : '<div class="hint">接口没返回余额字段（可能是该账号无权益，或字段名不在识别范围内）</div>';
+  lastInfoRaw = JSON.stringify(info.raw ?? {}, null, 2);
 
   const models = info.models ?? [];
+  const numbers = info.numbers ?? [];
+  const bal = info.balance && Object.keys(info.balance).length ? info.balance : null;
+  const pct = (v) => (v == null ? '<span class="muted">—</span>' : v + '%');
+
+  const balTable = bal
+    ? `<table><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
+      Object.entries(bal).map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num">${fmt(v)}</td></tr>`).join('') +
+      '</tbody></table>'
+    : '<div class="hint">没认出余额字段（下面「响应里的数字字段」是兜底清单）</div>';
+
+  const numTable = numbers.length
+    ? `<details ${bal ? '' : 'open'} style="margin-top:8px"><summary class="hint">响应里的数字字段（${numbers.length}）</summary>
+        <table style="margin-top:6px"><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
+      numbers.map((x) => `<tr><td class="mono">${esc(x.path)}</td><td class="num">${fmt(x.value)}</td></tr>`).join('') +
+      '</tbody></table></details>'
+    : '';
+
   const mtable = models.length
-    ? `<table class="tbl"><thead><tr><th>模型</th><th class="num">积分/次</th><th class="num">额度</th><th>标记</th></tr></thead><tbody>` +
+    ? `<table><thead><tr><th>模型</th><th class="num">积分/次</th><th class="num">额度</th><th>标记</th></tr></thead><tbody>` +
       models.map((m) => `<tr>
         <td class="mono">${esc(m.id)}</td>
         <td class="num">${m.credit == null ? '—' : fmt(m.credit)}</td>
         <td class="num">${m.limit == null ? '—' : fmt(m.limit)}</td>
         <td>${m.free ? '免费权益 ' : ''}${m.queued ? '排队 ' : ''}${m.reasoning ? '推理 ' : ''}</td>
       </tr>`).join('') +
-      `</tbody></table>`
+      '</tbody></table>'
     : '<div class="hint">没读到模型列表</div>';
 
-  const errs = (info.errors ?? []).length
-    ? `<details style="margin-top:10px"><summary class="hint">探测过程中的失败尝试（${info.errors.length}）</summary>
-        <pre style="white-space:pre-wrap;font-size:11px;color:#8b949e">${esc(info.errors.join('\n'))}</pre></details>`
+  const rawKeys = Object.keys(info.raw ?? {});
+  const rawBlock = rawKeys.length
+    ? `<details style="margin-top:8px"><summary class="hint">原始响应（${esc(rawKeys.join(' / '))}）</summary>
+        <pre class="mono" style="white-space:pre-wrap;font-size:11px;max-height:240px;overflow:auto;margin-top:6px">${esc(lastInfoRaw)}</pre></details>`
     : '';
 
-  const src = Object.entries(info.sources ?? {}).map(([k, v]) => `<div class="hint mono">${esc(k)}: ${esc(v)}</div>`).join('');
+  const src = Object.entries(info.sources ?? {})
+    .map(([k, v]) => `<div class="hint mono">${esc(k)}: ${esc(v)}</div>`)
+    .join('');
+
+  const errs = (info.errors ?? []).length
+    ? `<details style="margin-top:8px"><summary class="hint">探测过程中的失败尝试（${info.errors.length}）</summary>
+        <pre style="white-space:pre-wrap;font-size:11px;color:#8b949e;margin-top:6px">${esc(info.errors.join('\n'))}</pre></details>`
+    : '';
+
+  const warn = info.ok === false
+    ? `<div class="hint" style="color:#d29922;margin-bottom:10px">探测没有拿到可用字段，但下面保留了原始响应——把「原始响应」贴出来就能按真实结构校准解析。</div>`
+    : '';
 
   $('infoBody').innerHTML = `
-    <div class="grid g2">
+    ${warn}
+    <div class="grid g2" style="margin-bottom:12px">
       <div class="kpi"><div class="label">可用模型</div><div class="value">${info.modelCount ?? models.length}</div><div class="sub">${esc(info.checkedAt ?? '')}</div></div>
-      <div class="kpi"><div class="label">剩余积分合计</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">各余额字段求和</div></div>
+      <div class="kpi"><div class="label">剩余积分合计</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">剩余类字段求和</div></div>
     </div>
-    <h4 style="margin-top:14px">剩余积分</h4>${bal}
-    <h4 style="margin-top:14px">可用模型与价格</h4>${mtable}
-    ${src ? `<h4 style="margin-top:14px">数据来源</h4>${src}` : ''}
+    <h4>剩余积分</h4>${balTable}${numTable}
+    <h4 style="margin-top:16px">可用模型与价格</h4>${mtable}
+    ${src ? `<h4 style="margin-top:16px">数据来源</h4>${src}` : ''}
+    ${rawBlock}
     ${errs}`;
+}
+
+/* ---------------- 模型与价格 ---------------- */
+async function loadModels() {
+  try {
+    const j = await api('/models');
+    const models = j.models ?? [];
+    const accs = j.accounts ?? [];
+    const probed = accs.filter((a) => a.checkedAt).length;
+    $('modelsHint').textContent = models.length
+      ? `${models.length} 个模型 · ${probed} 个账号已探测`
+      : '还没有模型数据：到「网关与账号」给账号点「信息」探测一次，或点右上「重新探测全部账号」。';
+
+    $('modelsBody').innerHTML = models.length
+      ? models.map((m) => `<tr>
+          <td class="mono">${esc(m.id)}</td>
+          <td class="num">${m.credit == null ? '<span class="muted">—</span>' : fmt(m.credit)}</td>
+          <td class="num">${m.limit == null ? '<span class="muted">—</span>' : fmt(m.limit)}</td>
+          <td>${m.free ? '<span class="pill ok">免费权益</span> ' : ''}${m.queued ? '<span class="pill">排队</span> ' : ''}${m.reasoning ? '<span class="pill">推理</span>' : ''}</td>
+          <td class="hint">${esc((m.accounts ?? []).join('、'))}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+
+    $('modelsAccBody').innerHTML = accs.length
+      ? accs.map((a) => `<tr>
+          <td><strong>${esc(a.name)}</strong>${a.enabled ? '' : ' <span class="pill off">已停用</span>'}</td>
+          <td class="num">${fmt(a.modelCount)}</td>
+          <td class="num">${a.balanceTotal == null ? '<span class="muted">—</span>' : fmt(a.balanceTotal)}</td>
+          <td class="muted">${a.checkedAt ? new Date(a.checkedAt).toLocaleString('zh-CN') : '未探测'}</td>
+          <td class="num"><button class="sm" onclick="probeAccount('${a.id}')">探测</button></td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" class="empty">还没有账号</td></tr>';
+  } catch (e) { toast(e.message, true); }
+}
+
+async function probeAccount(id) {
+  try {
+    await api('/accounts/' + encodeURIComponent(id) + '/info', { method: 'POST', body: '{}' });
+    toast('探测完成');
+    loadModels();
+    loadAccounts();
+  } catch (e) { toast('探测失败：' + e.message, true); }
+}
+
+async function refreshModels(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '探测中…'; }
+  try {
+    const j = await api('/models/refresh', { method: 'POST', body: '{}' });
+    toast(`探测完成：成功 ${j.probed}/${j.total}` + (j.failed?.length ? `，失败 ${j.failed.length}` : ''));
+    if (j.failed?.length) console.warn('探测失败', j.failed);
+    loadModels();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '重新探测全部账号'; } }
 }
 
 /* ---------------- 导入原版 CLI 的 auth.json ---------------- */

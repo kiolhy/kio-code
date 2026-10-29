@@ -27,6 +27,7 @@ import { localRevision, shortSha } from './lib/version.mjs';
 import { createOAuth, OAuthError } from './lib/oauth.mjs';
 import { createCodeartsAuth, CodeartsAuthError } from './lib/codearts-auth.mjs';
 import { createAccountInfo } from './lib/account-info.mjs';
+import { buildCatalog } from './lib/model-catalog.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -428,6 +429,32 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       const acc = panel.updateAccount(seg[1], body);
       if (!acc) return void sendJson(res, 404, { error: { code: 'not_found' } });
       return void sendJson(res, 200, { ok: true, account: publicAccountSafe(acc) });
+    }
+
+    if (seg[0] === 'models' && method === 'GET') {
+      return void sendJson(res, 200, buildCatalog(panel.state.accounts ?? []));
+    }
+
+    if (seg[0] === 'models' && seg[1] === 'refresh' && method === 'POST') {
+      const accs = (panel.state.accounts ?? []).filter((a) => a.enabled !== false);
+      const failed = [];
+      let probed = 0;
+      const CONCURRENCY = 4;
+      for (let i = 0; i < accs.length; i += CONCURRENCY) {
+        const slice = accs.slice(i, i + CONCURRENCY);
+        const settled = await Promise.allSettled(slice.map((a) => accountInfo.probe(a)));
+        settled.forEach((r, k) => {
+          const acc = slice[k];
+          if (r.status === 'fulfilled') {
+            probed++;
+            panel.updateAccount(acc.id, { info: JSON.stringify(r.value), infoAt: r.value.checkedAt });
+          } else {
+            failed.push({ id: acc.id, name: acc.name, error: String(r.reason?.message ?? r.reason) });
+          }
+        });
+      }
+      log('info', `批量探测账号信息：成功 ${probed}，失败 ${failed.length}`);
+      return void sendJson(res, 200, { ok: true, probed, total: accs.length, failed });
     }
 
     if (seg[0] === 'accounts' && seg[1] && seg[2] === 'info') {

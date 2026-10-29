@@ -213,10 +213,10 @@
   "accountInfo": {
     "bases": [
       "https://opengw.developer.huaweicloud.com",
-      "https://snapengine-apig.cn-north-7.myhuaweicloud.com",
       "https://snap-access.cn-north-4.myhuaweicloud.com"
     ],
     "appId": "CodeAgent3.0",
+    "agentType": "AgentCenter",
     "codeAgentId": "a8bcb36232554267a5142361cc25a393",
     "timeoutMs": 20000
   },

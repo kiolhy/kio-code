@@ -226,6 +226,10 @@ console.log('\n\x1b[1m[5] 在线更新与 GitHub 状态\x1b[0m');
 
   const inf = await req('/panel/api/accounts/' + accId + '/info', { headers: H });
   ok('账号信息 GET 返回缓存位（不打网络）', inf.status === 200 && inf.body?.cached === true, `${inf.status}/${inf.body?.cached}`);
+
+  const cat = await req('/panel/api/models', { headers: H });
+  ok('模型目录 200', cat.status === 200 && Array.isArray(cat.body?.models), String(cat.status));
+  ok('模型目录带账号状态', Array.isArray(cat.body?.accounts), String(cat.body?.accounts?.length));
 }
 
 console.log('\n\x1b[1m[6] 授权添加开关（面板设置里开启）\x1b[0m');

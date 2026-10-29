@@ -466,6 +466,7 @@ data/
 | `github.*` | 在线更新的仓库 / 分支 / OAuth client_id / 代理 / token |
 | `update.*` | 在线更新开关、是否允许一键更新、自动检查间隔，见 [docs/update.md](docs/update.md) |
 | `oauth.*` | 账号池「授权添加」：OAuth 登录 → STS 临时 AK/SK 入库，见 [docs/oauth.md](docs/oauth.md) |
+| `accountInfo.*` | 账号信息探测：可用模型 / 每模型积分 / 剩余积分，见 [docs/account-models.md](docs/account-models.md) |
 
 环境变量覆盖：`MOCK_HUB_PORT`、`MOCK_HUB_HOST`、`MOCK_HUB_MODE`、`MOCK_HUB_UPSTREAM`、
 `MOCK_HUB_CONFIG`、`MOCK_HUB_DATA`、`MOCK_HUB_LOG_LEVEL`、`MOCK_HUB_GATEWAY_REGION`、
@@ -513,6 +514,7 @@ mock-hub/
 │   ├── codearts-auth.mjs   码道真实登录协议（反编译还原：PKCE + DPoP + ticket）
 │   ├── account-info.mjs    账号信息探测：可用模型 / 每模型积分 / 剩余积分
 │   ├── cache-stats.mjs     缓存命中归一化（OpenAI/DeepSeek/Anthropic 各家字段）
+│   ├── model-catalog.mjs   跨账号模型目录（同 id 取最高 credit，标记取并集）
 │   ├── dpop.mjs            DPoP（RFC 9449）：ES256 密钥对 + 证明 JWT
 │   ├── updater.mjs         在线更新：检查 / 应用 / 回滚
 │   ├── tar.mjs             最小 tar.gz 读写（更新包解包/打包）
@@ -536,7 +538,7 @@ mock-hub/
 │   ├── test-update.mjs     在线更新 / 设备码授权 32 项验证
 │   ├── test-oauth.mjs      账号池授权添加 56 项验证（含 DPoP / 设备码 / auth.json）
 │   ├── test-codearts-auth.mjs  码道真实登录协议 57 项验证（PKCE/DPoP/ticket/续期）
-│   ├── test-account-info.mjs   账号信息探测 28 项验证（余额/模型/积分/签名）
+│   ├── test-account-info.mjs   账号信息探测 61 项验证（余额/模型三种形状/积分/目录合并）
 │   ├── test-cache.mjs          缓存命中统计 40 项验证（8 种 usage 形状/比例/聚合）
 │   ├── test-capture.mjs    遥测捕获 13 项验证（自签证书 / OTLP / 来源域名）
 │   ├── egress-proxy.mjs    出站代理：不用管理员权限替代 hosts，拦截+捕获
