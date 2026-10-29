@@ -104,7 +104,6 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <button data-tab="models">模型</button>
     <button data-tab="proxies">代理</button>
     <button data-tab="schedule">调度</button>
-    <button data-tab="agents">智能体配置</button>
     <button data-tab="settings">设置</button>
     <button data-tab="maint">维护</button>
     <button data-tab="logs">运行日志</button>
@@ -310,32 +309,6 @@ socks5://user:pass@5.6.7.8:1080
         </tr></thead>
         <tbody id="quotaBody"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
       </table>
-    </div>
-  </section>
-
-    <h2>智能体接入</h2>
-    <div class="card">
-      <div class="field"><label>网关地址</label><input id="agBase" readonly></div>
-      <div class="field"><label>API Key</label>
-        <select id="agKey"><option value="">（无 Key，网关未启用鉴权）</option></select>
-      </div>
-      <div class="field"><label>模型</label><input id="agModel" readonly></div>
-      <div class="hint">把下面任意一段复制到对应客户端即可。Key 会明文出现在配置里，注意不要提交到仓库。</div>
-    </div>
-
-    <h3>OpenAI SDK / curl</h3>
-    <div class="card"><pre id="snipOpenai"></pre>
-      <div class="row" style="margin-top:10px"><button class="sm" onclick="copySnip('snipOpenai')">复制</button></div>
-    </div>
-
-    <h3>环境变量（Codex / 通用客户端）</h3>
-    <div class="card"><pre id="snipEnv"></pre>
-      <div class="row" style="margin-top:10px"><button class="sm" onclick="copySnip('snipEnv')">复制</button></div>
-    </div>
-
-    <h3>Claude Code（Anthropic 协议）</h3>
-    <div class="card"><pre id="snipClaude"></pre>
-      <div class="row" style="margin-top:10px"><button class="sm" onclick="copySnip('snipClaude')">复制</button></div>
     </div>
   </section>
 
@@ -597,7 +570,6 @@ function showTab(tab) {
   if (tab === 'logs') loadLogs();
   if (tab === 'settings') loadSettings();
   if (tab === 'maint') loadMaint();
-  if (tab === 'agents') loadAgents();
   if (tab === 'gateway') { loadAccounts(); loadKeys(); loadOverview(); }
 }
 
@@ -1266,11 +1238,6 @@ async function loadKeys() {
         <button class="sm danger" onclick="delKey('${k.id}')">删除</button>
       </td>
     </tr>`).join('');
-    const sel = $('agKey');
-    if (sel) {
-      sel.innerHTML = '<option value="">（无 Key）</option>' +
-        rows.filter((k) => k.enabled).map((k) => `<option value="${esc(k.key)}">${esc(k.name)}</option>`).join('');
-    }
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1364,31 +1331,6 @@ async function loadUsage() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* ---------------- 智能体 ---------------- */
-async function loadAgents() {
-  const base = location.origin;
-  $('agBase').value = base + '/v1';
-  $('agModel').value = 'mock-thinking';
-  const key = $('agKey').value || '<YOUR_KEY>';
-
-  $('snipOpenai').textContent =
-`curl ${base}/v1/chat/completions \\
-  -H "Authorization: Bearer ${key}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"mock-thinking","messages":[{"role":"user","content":"你好"}]}'`;
-
-  $('snipEnv').textContent =
-`OPENAI_BASE_URL=${base}/v1
-OPENAI_API_KEY=${key}`;
-
-  $('snipClaude').textContent =
-`ANTHROPIC_BASE_URL=${base}
-ANTHROPIC_AUTH_TOKEN=${key}
-ANTHROPIC_MODEL=mock-thinking`;
-}
-$('agKey')?.addEventListener('change', loadAgents);
-
-function copySnip(id) { copyText($(id).textContent); }
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); toast('已复制'); }
   catch { toast('复制失败，请手动选择', true); }
