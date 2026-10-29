@@ -185,7 +185,24 @@ console.log('\n\x1b[1m[4] 用量归因\x1b[0m');
   }
 }
 
-console.log('\n\x1b[1m[5] 设置与清理\x1b[0m');
+console.log('\n\x1b[1m[5] 在线更新与 GitHub 状态\x1b[0m');
+{
+  const u = await req('/panel/api/update', { headers: H });
+  ok('update 状态 200', u.status === 200, `status=${u.status}`);
+  ok('含 repo/branch', typeof u.body?.repo === 'string' && typeof u.body?.branch === 'string', `${u.body?.repo}@${u.body?.branch}`);
+  ok('含当前修订', !!u.body?.current, `${u.body?.current?.short}/${u.body?.current?.source}`);
+  ok('含 auth 状态', typeof u.body?.auth?.configured === 'boolean');
+
+  const g = await req('/panel/api/gh', { headers: H });
+  ok('gh 状态 200', g.status === 200);
+  ok('gh 含 repo', typeof g.body?.repo === 'string', g.body?.repo);
+  ok('gh 含 configured 标志', typeof g.body?.configured === 'boolean', String(g.body?.configured));
+
+  const dev = await req('/panel/api/gh/device/start', { method: 'POST', headers: H, body: '{}' });
+  ok('设备码无 client_id 时明确报错', dev.status === 400 && dev.body?.error?.code === 'no_client_id', `${dev.status}/${dev.body?.error?.code}`);
+}
+
+console.log('\n\x1b[1m[6] 设置与清理\x1b[0m');
 {
   const s = await req('/panel/api/settings', { headers: H });
   ok('settings 200', s.status === 200);

@@ -18,6 +18,19 @@ COPY tools ./tools
 COPY docs ./docs
 COPY LICENSE README.md ./
 
+# 构建信息：容器里没有 .git，在线更新靠 build-info.json 判断「我现在是哪个提交」
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=
+RUN GIT_SHA="${GIT_SHA}" BUILD_TIME="${BUILD_TIME}" node -e "\
+  const fs=require('fs');\
+  const pkg=require('./package.json');\
+  fs.writeFileSync('build-info.json', JSON.stringify({\
+    sha: process.env.GIT_SHA || 'unknown',\
+    version: pkg.version,\
+    builtAt: process.env.BUILD_TIME || new Date().toISOString(),\
+    source: 'docker'\
+  }, null, 2));"
+
 # 数据目录：账号、Key、用量、日志都落在这里，必须挂卷
 RUN mkdir -p /app/data && chown -R node:node /app
 

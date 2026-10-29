@@ -143,7 +143,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 构建镜像
-        run: docker build -t kio-code-gateway:ci .
+        run: docker build -t kio-code-gateway:ci --build-arg GIT_SHA=${{ github.sha }} .
 
       - name: 启动容器
         run: |
@@ -160,13 +160,16 @@ jobs:
           docker logs gw-ci || true
           exit 1
 
-      - name: 镜像内部自检（lib / 指纹 / 文档）
+      - name: 镜像内部自检（lib / 指纹 / 文档 / 更新）
         run: |
           set -e
           docker exec gw-ci node -e "import('/app/lib/gateway.mjs').then(()=>console.log('gateway.mjs ok'))"
           docker exec gw-ci node -e "import('/app/lib/stealth.mjs').then(m=>console.log('UA =', m.resolveProfile({}).userAgent))"
-          docker exec gw-ci node -e "const fs=require('fs');for(const f of ['/app/LICENSE','/app/docs/stealth.md','/app/lib/transport.mjs','/app/lib/pacing.mjs']) fs.accessSync(f);console.log('files ok')"
+          docker exec gw-ci node -e "import('/app/lib/updater.mjs').then(m=>console.log('updater.mjs ok'))"
+          docker exec gw-ci node -e "const fs=require('fs');for(const f of ['/app/LICENSE','/app/docs/stealth.md','/app/lib/transport.mjs','/app/lib/pacing.mjs','/app/build-info.json']) fs.accessSync(f);console.log('files ok')"
+          docker exec gw-ci node -e "const b=require('/app/build-info.json');console.log('build sha =', b.sha, 'version =', b.version)"
           docker exec gw-ci node tools/test-stealth.mjs
+          docker exec gw-ci node tools/test-update.mjs
           echo "镜像自检通过"
 
       - name: 收尾

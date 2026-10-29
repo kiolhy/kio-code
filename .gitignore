@@ -19,7 +19,10 @@ Thumbs.db
 # 提取出来的官方 CLI（体积大且非本项目产物）
 _codearts_re/
 
-# CI ????
+# CI 临时文件
 config.ci.json
 .server.pid
 config.capture-ci.json
+
+# 构建信息（镜像构建 / 在线更新时生成）
+build-info.json

@@ -5,7 +5,11 @@
 
 services:
   gateway:
-    build: .
+    build:
+      context: .
+      args:
+        # 构建时写入 build-info.json，面板「维护」页据此判断是否落后
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: kio-code-gateway:latest
     container_name: kio-code-gateway
     restart: unless-stopped

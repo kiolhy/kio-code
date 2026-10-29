@@ -22,6 +22,8 @@ import {
 import { verifyRequest, parseAuthorization } from './lib/sign.mjs';
 import { createGovernor, parseRetryAfter } from './lib/pacing.mjs';
 import { resolveProfile, findIdentityLeaks } from './lib/stealth.mjs';
+import { createUpdater, UpdateError } from './lib/updater.mjs';
+import { localRevision, shortSha } from './lib/version.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -69,6 +71,9 @@ const panel = createPanel({ dataDir: DATA_DIR });
 const handlers = buildHandlers(cfg, store);
 // 出站节流：账号级并发/间隔/冷却，形状见 lib/pacing.mjs
 const governor = createGovernor({ cfg });
+// 在线更新：检测 GitHub 提交 → 下载 tarball → 校验 → 备份 → 换文件，见 lib/updater.mjs
+const updater = createUpdater({ cfg, rootDir: __dirname, dataDir: DATA_DIR, log });
+const BUILD = localRevision(__dirname);
 
 function saveConfig() {
   try {
@@ -444,6 +449,80 @@ async function handlePanelApi(req, res, url, method, reqId, started) {
       return void sendJson(res, 200, { ok: true, settings: panel.updateSettings(body) });
     }
 
+    /* ---- 在线更新 / GitHub 授权 ---- */
+    if (p === '/update' && method === 'GET') {
+      return void sendJson(res, 200, { ok: true, ...updater.status() });
+    }
+
+    if (p === '/update/check' && method === 'POST') {
+      return void sendJson(res, 200, await updater.check());
+    }
+
+    if (p === '/update/apply' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      return void sendJson(res, 200, await updater.apply({ sha: body.sha }));
+    }
+
+    if (p === '/update/rollback' && method === 'POST') {
+      return void sendJson(res, 200, updater.rollback());
+    }
+
+    if (p === '/update/restart' && method === 'POST') {
+      // 交给外面的进程管理器（docker restart / systemd Restart=always）拉起来
+      sendJson(res, 200, { ok: true, restarting: true });
+      log('warn', '面板触发重启');
+      setTimeout(() => process.exit(0), 300).unref();
+      return;
+    }
+
+    if (p === '/gh' && method === 'GET') {
+      const t = updater.github.readToken();
+      return void sendJson(res, 200, {
+        ok: true,
+        repo: updater.repo,
+        branch: updater.branch,
+        configured: !!t,
+        source: t?.source ?? null,
+        masked: updater.github.maskedToken(),
+        login: t?.login ?? null,
+        clientId: !!updater.github.clientId,
+      });
+    }
+
+    if (p === '/gh/device/start' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const r = await updater.github.startDeviceFlow({ scope: body.scope ?? 'repo' });
+      return void sendJson(res, 200, {
+        ok: true,
+        userCode: r.userCode,
+        verificationUri: r.verificationUri,
+        expiresIn: r.expiresIn,
+        interval: r.interval,
+        deviceCode: r.deviceCode,
+      });
+    }
+
+    if (p === '/gh/device/poll' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      if (!body.deviceCode) {
+        return void sendJson(res, 400, { error: { code: 'missing_device_code', message: '缺少 deviceCode' } });
+      }
+      const r = await updater.github.pollDeviceFlow(body.deviceCode);
+      return void sendJson(res, 200, { ok: true, ...r });
+    }
+
+    if (p === '/gh/token' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      if (!body.token) return void sendJson(res, 400, { error: { code: 'missing_token' } });
+      updater.github.saveToken({ token: body.token, scope: body.scope ?? 'manual' });
+      return void sendJson(res, 200, { ok: true, masked: updater.github.maskedToken() });
+    }
+
+    if (p === '/gh/token' && method === 'DELETE') {
+      updater.github.clearToken();
+      return void sendJson(res, 200, { ok: true });
+    }
+
     /* ---- 运行日志 ---- */
     if (p === '/logs') {
       const limit = Math.min(Number(url.searchParams.get('limit') ?? 200), 2000);
@@ -471,7 +550,14 @@ async function handlePanelApi(req, res, url, method, reqId, started) {
 
     return void sendJson(res, 404, { error: { code: 'unknown_endpoint', path: p } });
   } catch (e) {
-    return void sendJson(res, 500, { error: { code: 'panel_error', message: String(e?.message ?? e) } });
+    const status = e instanceof UpdateError ? e.status : Number(e?.status) >= 400 && Number(e?.status) < 600 ? Number(e.status) : 500;
+    return void sendJson(res, status, {
+      error: {
+        code: e?.code ?? 'panel_error',
+        message: String(e?.message ?? e),
+        ...(e?.detail ? { detail: e.detail } : {}),
+      },
+    });
   }
 }
 
@@ -812,6 +898,7 @@ const requestHandler = async (req, res) => {
     return void sendJson(res, 200, {
       ok: true,
       mode: cfg.mode,
+      version: { version: BUILD.version, sha: shortSha(BUILD.sha), source: BUILD.source },
       uptimeSec: Math.round(process.uptime()),
       requests: store.counters.requests,
       // 出站视角：部署后先看这里，确认 UA / 代理 / 并发是不是你要的那套
@@ -1544,6 +1631,7 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`  管理面板   ${base}/admin`);
   console.log(`  健康检查   ${base}/health`);
   console.log(`  当前模式   ${cfg.mode}${cfg.mode === 'proxy' ? ` → ${cfg.upstream.baseUrl}` : ''}`);
+  console.log(`  版本       ${BUILD.version} (${shortSha(BUILD.sha)}, ${BUILD.source})`);
   console.log(`  数据目录   ${DATA_DIR}`);
   console.log('');
   console.log('  让码道 CLI 指向这里（PowerShell）：');
@@ -1551,6 +1639,20 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`    $env:PLUGIN_ENV = "hc"`);
   console.log('');
 });
+
+/* 定时检查更新：只记录，不自动换文件（换文件会中断正在跑的请求） */
+const autoCheckMs = Number(cfg.update?.autoCheckMs ?? 0);
+if (cfg.update?.enabled !== false && autoCheckMs > 0) {
+  const timer = setInterval(() => {
+    updater
+      .check()
+      .then((r) => {
+        if (r.behind) log('info', `发现新提交 ${r.latest.short}（本地 ${shortSha(r.current.sha)}），可在面板一键更新`);
+      })
+      .catch((e) => log('warn', `自动检查更新失败：${e?.message ?? e}`));
+  }, autoCheckMs);
+  timer.unref();
+}
 
 /* ------------------------------------------------------------------ */
 /* 遥测捕获：在 443 上用自签证书接住被 hosts 指过来的官方域名          */

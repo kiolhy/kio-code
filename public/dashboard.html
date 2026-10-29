@@ -101,6 +101,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <button data-tab="usage">数据看板</button>
     <button data-tab="agents">智能体配置</button>
     <button data-tab="settings">设置</button>
+    <button data-tab="maint">维护</button>
     <button data-tab="logs">运行日志</button>
   </nav>
   <div class="right">
@@ -267,6 +268,46 @@ dialog h4{margin:0 0 14px;font-size:14px}
     </div>
   </section>
 
+  <!-- ============ 维护（在线更新 / GitHub 授权） ============ -->
+  <section class="page" id="page-maint">
+    <h2>维护</h2>
+
+    <h3>版本与更新</h3>
+    <div class="card">
+      <div class="grid g2">
+        <div class="kpi"><div class="label">当前版本</div><div class="value" id="verNow">—</div><div class="sub" id="verSource">—</div></div>
+        <div class="kpi"><div class="label">远端最新</div><div class="value" id="verLatest">—</div><div class="sub" id="verChecked">还没检查</div></div>
+      </div>
+      <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+        <button onclick="checkUpdate()">检查更新</button>
+        <button class="primary" onclick="applyUpdate()">一键更新</button>
+        <button onclick="rollbackUpdate()">回滚</button>
+        <button class="danger" onclick="restartServer()">重启服务</button>
+      </div>
+      <div class="hint">更新走 GitHub API：下载 tarball → 校验语法 → 备份到 <span class="mono">data/update/</span> → 换文件。<span class="mono">config.json</span> 与 <span class="mono">data/</span> 不会被覆盖，换完需要重启生效。</div>
+      <pre id="updLog" style="margin-top:10px;white-space:pre-wrap"></pre>
+    </div>
+
+    <h3>GitHub 授权</h3>
+    <div class="card">
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:220px">
+          <div class="label">状态</div>
+          <div id="ghState" class="mono">未检查</div>
+        </div>
+        <button onclick="ghStart()">生成登录链接</button>
+        <button onclick="ghClear()">清除凭据</button>
+      </div>
+      <div id="ghBox" style="margin-top:12px"></div>
+      <div class="field" style="margin-top:12px">
+        <label>手动粘贴 token（可选：私有仓库 / 不想用设备码时）</label>
+        <input id="ghToken" type="password" placeholder="ghp_… / github_pat_…">
+      </div>
+      <button onclick="ghSaveToken()">保存 token</button>
+      <div class="hint">公开仓库不需要授权；私有仓库或想提高 API 限额时用设备码登录：打开链接输入 8 位码，token 存到 <span class="mono">data/gh-token.json</span>（0600）。设备码登录需要先在 GitHub 建一个 OAuth App，把 <span class="mono">client_id</span> 填进 <span class="mono">config.json → github.clientId</span>。</div>
+    </div>
+  </section>
+
   <!-- ============ 运行日志 ============ -->
   <section class="page" id="page-logs">
     <div class="row" style="margin-bottom:14px">
@@ -345,6 +386,7 @@ function showTab(tab) {
   if (tab === 'usage') loadUsage();
   if (tab === 'logs') loadLogs();
   if (tab === 'settings') loadSettings();
+  if (tab === 'maint') loadMaint();
   if (tab === 'agents') loadAgents();
   if (tab === 'gateway') { loadAccounts(); loadKeys(); loadOverview(); }
 }
@@ -635,6 +677,132 @@ async function loadLogs() {
             <span class="spacer"></span><span class="muted">${f.lines.length} 行</span>
           </div><pre>${esc(f.lines.join('\n'))}</pre></div>`).join('')
       : '<div class="card"><div class="empty">还没有日志文件</div></div>';
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 维护 ---------------- */
+async function loadMaint() {
+  try {
+    const j = await api('/update');
+    $('verNow').textContent = j.current?.sha ? j.current.short : (j.current?.version ?? '—');
+    $('verSource').textContent = `${j.current?.version ?? ''} · ${j.current?.source ?? ''}`;
+    if (j.lastCheck) {
+      $('verLatest').textContent = String(j.lastCheck.latest ?? '').slice(0, 7);
+      $('verChecked').textContent = ago(j.lastCheck.checkedAt) + (j.lastCheck.behind ? ' · 有新提交' : ' · 已是最新');
+    }
+    if (j.state?.appliedAt) {
+      $('updLog').textContent = `上次更新 ${new Date(j.state.appliedAt).toLocaleString('zh-CN')}：${String(j.state.from).slice(0, 7)} → ${String(j.state.to).slice(0, 7)}${j.state.rolledBackAt ? '\n已回滚到 ' + String(j.state.rolledBackTo ?? '').slice(0, 7) : ''}`;
+    }
+    const g = await api('/gh');
+    $('ghState').textContent = g.configured
+      ? `已授权 ${g.masked}（${g.source}${g.login ? ' · ' + g.login : ''}）`
+      : '未授权（公开仓库可直接用）';
+    if (!g.clientId) $('ghState').textContent += ' · 未配置 client_id';
+  } catch (e) { toast(e.message, true); }
+}
+
+async function checkUpdate() {
+  $('updLog').textContent = '检查中…';
+  try {
+    const j = await api('/update/check', { method: 'POST' });
+    $('verLatest').textContent = j.latest.short;
+    $('verChecked').textContent = (j.behind ? '有新提交' : '已是最新') + ' · ' + new Date(j.checkedAt).toLocaleTimeString('zh-CN');
+    $('updLog').textContent = j.behind
+      ? `落后 ${j.commits.length} 个提交：\n` + j.commits.map((c) => `${c.short}  ${c.message}`).join('\n')
+      : `已是最新（${j.latest.short}）`;
+    if (!j.behind) toast('已是最新');
+  } catch (e) { $('updLog').textContent = '检查失败：' + e.message; toast(e.message, true); }
+}
+
+async function applyUpdate() {
+  if (!confirm('下载并替换代码文件？完成后需要重启服务生效。')) return;
+  $('updLog').textContent = '下载并校验中…';
+  try {
+    const j = await api('/update/apply', { method: 'POST', body: '{}' });
+    if (j.alreadyLatest) {
+      $('updLog').textContent = '已经是最新版本';
+      toast('已是最新');
+    } else {
+      $('updLog').textContent = `更新完成：${String(j.from).slice(0, 7)} → ${String(j.to).slice(0, 7)}（v${j.version}）\n备份：${j.backup}\n重启服务后生效。`;
+      toast('更新完成，重启后生效');
+    }
+  } catch (e) { $('updLog').textContent = '更新失败：' + e.message; toast(e.message, true); }
+}
+
+async function rollbackUpdate() {
+  if (!confirm('回滚到上一次更新前的版本？')) return;
+  try {
+    const j = await api('/update/rollback', { method: 'POST', body: '{}' });
+    $('updLog').textContent = `已回滚到 ${String(j.restored).slice(0, 7)}（从 ${String(j.from).slice(0, 7)}），重启后生效。`;
+    toast('已回滚，重启后生效');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function restartServer() {
+  if (!confirm('重启服务？进行中的请求会被中断。')) return;
+  try {
+    await api('/update/restart', { method: 'POST', body: '{}' });
+    toast('已请求重启');
+    setTimeout(() => location.reload(), 3500);
+  } catch (e) { toast(e.message, true); }
+}
+
+let ghTimer = null;
+async function ghStart() {
+  try {
+    const j = await api('/gh/device/start', { method: 'POST', body: '{}' });
+    $('ghBox').innerHTML =
+      `<div class="card" style="border-color:var(--accent)">打开 <a href="${esc(j.verificationUri)}" target="_blank" rel="noreferrer">${esc(j.verificationUri)}</a>，输入代码
+        <b class="mono" style="font-size:22px;letter-spacing:2px">${esc(j.userCode)}</b>
+        <div class="hint" id="ghPoll">等待授权…</div></div>`;
+    clearInterval(ghTimer);
+    let interval = Math.max(5, j.interval || 5) * 1000;
+    const poll = async () => {
+      try {
+        const r = await api('/gh/device/poll', { method: 'POST', body: JSON.stringify({ deviceCode: j.deviceCode }) });
+        if (r.status === 'success') {
+          clearInterval(ghTimer);
+          $('ghPoll').textContent = '授权成功，已保存 token';
+          toast('GitHub 授权成功');
+          loadMaint();
+        } else if (r.status === 'slow_down') {
+          interval = Math.max(5, r.interval || 10) * 1000;
+          clearInterval(ghTimer);
+          ghTimer = setInterval(poll, interval);
+          $('ghPoll').textContent = '等待中（慢下来了）…';
+        } else if (r.status === 'expired') {
+          clearInterval(ghTimer);
+          $('ghPoll').textContent = '授权码已过期，重新生成';
+        } else if (r.status === 'denied') {
+          clearInterval(ghTimer);
+          $('ghPoll').textContent = '授权被拒绝';
+        }
+      } catch (e) {
+        clearInterval(ghTimer);
+        $('ghPoll').textContent = '轮询失败：' + e.message;
+      }
+    };
+    ghTimer = setInterval(poll, interval);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function ghSaveToken() {
+  const token = $('ghToken').value.trim();
+  if (!token) return toast('先粘贴 token', true);
+  try {
+    await api('/gh/token', { method: 'POST', body: JSON.stringify({ token }) });
+    $('ghToken').value = '';
+    toast('token 已保存');
+    loadMaint();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function ghClear() {
+  if (!confirm('清除已保存的 GitHub token？')) return;
+  try {
+    await api('/gh/token', { method: 'DELETE' });
+    toast('已清除');
+    loadMaint();
   } catch (e) { toast(e.message, true); }
 }
 
