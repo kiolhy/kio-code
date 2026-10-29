@@ -320,6 +320,14 @@ dialog h4{margin:0 0 14px;font-size:14px}
         <button class="danger" onclick="restartServer()">重启服务</button>
       </div>
       <div class="hint">更新走 GitHub API：下载 tarball → 校验语法 → 备份到 <span class="mono">data/update/</span> → 换文件。<span class="mono">config.json</span> 与 <span class="mono">data/</span> 不会被覆盖，换完需要重启生效。</div>
+      <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:280px">
+          <div class="label">更新包 URL（GitHub API 连不上时用这个）</div>
+          <input id="updUrl" placeholder="https://ghfast.top/https://github.com/kiolhy/kio-code/archive/&lt;sha&gt;.tar.gz">
+        </div>
+        <button onclick="applyUpdateFromUrl()">从 URL 更新</button>
+      </div>
+      <div class="hint" style="margin-top:6px">「检查更新」报 502 基本都是服务器连不上 <span class="mono">api.github.com</span>。填一个能下载到的 tar.gz 地址即可，校验/备份/回滚流程完全一样。</div>
       <pre id="updLog" style="margin-top:10px;white-space:pre-wrap"></pre>
     </div>
 
@@ -900,6 +908,24 @@ async function applyUpdate() {
   $('updLog').textContent = '下载并校验中…';
   try {
     const j = await api('/update/apply', { method: 'POST', body: '{}' });
+    if (j.alreadyLatest) {
+      $('updLog').textContent = '已经是最新版本';
+      toast('已是最新');
+    } else {
+      $('updLog').textContent = `更新完成：${String(j.from).slice(0, 7)} → ${String(j.to).slice(0, 7)}（v${j.version}）\n备份：${j.backup}\n重启服务后生效。`;
+      toast('更新完成，重启后生效');
+    }
+  } catch (e) { $('updLog').textContent = '更新失败：' + e.message; toast(e.message, true); }
+}
+
+async function applyUpdateFromUrl() {
+  const el = $('updUrl');
+  const url = (el && el.value || '').trim();
+  if (!url) return toast('先填更新包 URL', true);
+  if (!confirm('从该地址下载并替换代码文件？完成后需要重启服务生效。')) return;
+  $('updLog').textContent = '从 URL 下载并校验中…';
+  try {
+    const j = await api('/update/from-url', { method: 'POST', body: JSON.stringify({ url }) });
     if (j.alreadyLatest) {
       $('updLog').textContent = '已经是最新版本';
       toast('已是最新');

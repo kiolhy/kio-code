@@ -521,6 +521,12 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       return void sendJson(res, 200, await updater.apply({ sha: body.sha }));
     }
 
+    // GitHub API 连不上时的兜底：直接给一个 tar.gz 地址
+    if (p === '/update/from-url' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      return void sendJson(res, 200, await updater.applyFromUrl({ url: body.url, sha: body.sha }));
+    }
+
     if (p === '/update/rollback' && method === 'POST') {
       return void sendJson(res, 200, updater.rollback());
     }

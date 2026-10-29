@@ -78,6 +78,52 @@ GitHub 的设备码接口需要一个 OAuth App 的 `client_id`：
 - `docker compose build` 会透传 `GIT_SHA` 环境变量（`GIT_SHA=xxx docker compose build`）。
 - 在线更新成功后，会重写 `build-info.json` 指向新提交，后续检查基于新基线。
 
+## 检查更新报 502 怎么办
+
+`check_failed / HTTP 502` 只有一个原因：**服务器连不上 `api.github.com`**（DNS 被污染、出网被封、TLS 被重置）。
+不是仓库问题，也不是权限问题（公开仓库不需要 token）。
+
+三条出路，按省事程度排：
+
+### 1. 给出口加代理（最干净）
+
+```jsonc
+"github": { "proxy": "http://127.0.0.1:7890" }
+```
+
+`github.proxy` 同时作用于 API、tarball 下载和面板里的设备码登录。
+
+### 2. 面板「从 URL 更新」（不依赖 GitHub API）
+
+维护 → 版本与更新 → 填一个能下载到的 tar.gz 地址 → 「从 URL 更新」：
+
+```
+https://ghfast.top/https://github.com/kiolhy/kio-code/archive/<sha>.tar.gz
+```
+
+后端是 `POST /panel/api/update/from-url`，参数 `{ "url": "...", "sha": "可选" }`。
+下载 → `node --check` 校验 → 备份 → 换文件，流程与「一键更新」完全一致；URL 里带 40 位 sha 会自动识别成目标版本。
+只接受 `http://` / `https://`，大小上限 64MB，`config.json` 与 `data/` 同样不会被覆盖。
+
+### 3. 手动 bootstrap（连「从 URL 更新」都还没用上的时候）
+
+老版本没有 from-url 入口，先在服务器上手动换一次文件：
+
+```bash
+cd /path/to/kio-code-gateway
+SHA=<40位sha>
+curl -fL -o /tmp/kio.tar.gz "https://ghfast.top/https://github.com/kiolhy/kio-code/archive/$SHA.tar.gz"
+rm -rf /tmp/kio && mkdir -p /tmp/kio && tar xzf /tmp/kio.tar.gz -C /tmp/kio
+SRC=$(ls -d /tmp/kio/kio-code-*)
+cp -a "$SRC/server.mjs" "$SRC/package.json" "$SRC/README.md" "$SRC/LICENSE" . 2>/dev/null
+cp -a "$SRC/lib" "$SRC/public" "$SRC/tools" "$SRC/docs" "$SRC/.github" . 2>/dev/null
+node --check server.mjs && echo "语法 OK"
+# config.json 与 data/ 没动过，重启服务即可
+```
+
+镜像可用性实测（2026-10）：`ghfast.top` ✅、`codeload.github.com` 直连 ✅（境外）、
+`gh-proxy.com` ⚠️（共享 IP 会撞 API 限流）、`api.kkgithub.com` ❌、`ghproxy.net` ❌。
+
 ## 做不到 / 注意
 
 - 更新是「整体换文件」，不是 git merge：本地改过的代码会被覆盖（配置和数据不受影响）。本地二开请以提交为准，别只改文件不提交。
@@ -88,7 +134,7 @@ GitHub 的设备码接口需要一个 OAuth App 的 `client_id`：
 ## 测试
 
 ```bash
-npm run test:update   # 32 项：check/apply/回滚/语法与缺文件兜底/设备码/token
+npm run test:update   # 42 项：check/apply/回滚/语法与缺文件兜底/从 URL 更新/设备码/token
 ```
 
 `tools/test-update.mjs` 用本地假 GitHub 服务器 + 临时目录跑全程，不碰真实网络、不碰真实仓库。

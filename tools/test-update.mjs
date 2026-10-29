@@ -63,6 +63,12 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/gzip' });
     return res.end(buf);
   }
+  if (req.method === 'GET' && u.pathname.startsWith('/mirror/')) {
+    const buf = tarballs.get('MIRROR');
+    if (!buf) { res.writeHead(404); return res.end('no mirror pkg'); }
+    res.writeHead(200, { 'content-type': 'application/gzip' });
+    return res.end(buf);
+  }
   if (req.method === 'POST' && u.pathname === '/login/device/code') {
     return send(200, {
       device_code: 'DC_TEST_1', user_code: 'ABCD-1234',
@@ -204,6 +210,35 @@ console.log('\n\x1b[1m[7] 未配置 client_id 的报错\x1b[0m');
   let threw = null;
   try { await gh2.startDeviceFlow(); } catch (e) { threw = e; }
   ok('缺 client_id 明确报错', threw?.code === 'no_client_id', threw?.code);
+}
+
+console.log('\n\x1b[1m[8] 从 URL 更新（GitHub API 连不上时的兜底）\x1b[0m');
+{
+  const SHA_C = 'c'.repeat(40);
+  tarballs.set('MIRROR', createTarGz({
+    [`repo-${SHA_C}/server.mjs`]: "console.log('v3');\n",
+    [`repo-${SHA_C}/package.json`]: JSON.stringify({ name: 'kio-code-gateway', version: '1.3.0', type: 'module' }),
+    [`repo-${SHA_C}/lib/gateway.mjs`]: 'export const GATEWAY = 3;\n',
+    [`repo-${SHA_C}/public/dashboard.html`]: '<html>v3</html>\n',
+  }));
+
+  const r = await updater.applyFromUrl({ url: `${base}/mirror/${SHA_C}.tar.gz` });
+  ok('从 URL 更新成功', r.ok === true, JSON.stringify(r));
+  ok('目标 sha 从 URL 里认出来', r.to === SHA_C, String(r.to).slice(0, 7));
+  ok('版本读到 1.3.0', r.version === '1.3.0', r.version);
+  ok('server.mjs 换成 v3', fs.readFileSync(path.join(root, 'server.mjs'), 'utf8').includes('v3'));
+  ok('build-info 标记 from-url', JSON.parse(fs.readFileSync(path.join(root, 'build-info.json'), 'utf8')).source === 'from-url');
+  ok('config.json 仍未被覆盖', JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8')).marker === 'user-config');
+  ok('data/ 仍完好', fs.readFileSync(path.join(root, 'data', 'keep.txt'), 'utf8') === 'precious\n');
+
+  let e1 = null;
+  try { await updater.applyFromUrl({ url: 'ftp://x/y.tgz' }); } catch (e) { e1 = e; }
+  ok('非 http(s) URL 被拒', e1?.code === 'bad_url', e1?.code);
+
+  let e2 = null;
+  try { await updater.applyFromUrl({ url: `${base}/mirror/nope.tar.gz` }); } catch (e) { e2 = e; }
+  ok('下载 404 归为 download_failed', e2?.code === 'download_failed', `${e2?.code}/${e2?.status}`);
+  ok('失败后代码没被换', fs.readFileSync(path.join(root, 'server.mjs'), 'utf8').includes('v3'));
 }
 
 console.log(`\n\x1b[1m结果：\x1b[0m\x1b[32m${pass} 通过\x1b[0m` + (fail ? `，\x1b[31m${fail} 失败\x1b[0m` : '，\x1b[32m0 失败\x1b[0m'));
