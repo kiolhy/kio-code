@@ -191,78 +191,90 @@ jobs:
         shell: pwsh
         run: ./tools/make-cert.ps1
 
-      - name: 启动网关
+      # 起服务 / 等待 / 跑测试 / 收尾必须在同一步里：
+      # GitHub 的 Windows runner 会在步骤结束时回收子进程，跨步骤留下的 node 会消失，
+      # 下一步就变成 ECONNREFUSED 127.0.0.1:8443（历史失败原因）。
+      - name: 起网关 → 捕获链路测试 → 收尾
         shell: pwsh
+        env:
+          CAP_PORT: '8443'
         run: |
+          $ErrorActionPreference = 'Continue'
           New-Item -ItemType Directory -Force -Path data | Out-Null
-          # GitHub Windows runner 上 443 连不通（即使 listen 成功），
-          # 这里换 8443 验证捕获链路本身；443 端口留给本地实测。
+          # 绑 0.0.0.0、连 127.0.0.1：Windows runner 上只绑回环偶发不接受连接
           node -e "
             const fs = require('fs');
             const c = JSON.parse(fs.readFileSync('config.json', 'utf8'));
-            c.capture = { ...(c.capture || {}), enabled: true, host: '127.0.0.1', port: 8443 };
+            c.capture = { ...(c.capture || {}), enabled: true, host: '0.0.0.0', port: 8443 };
             fs.writeFileSync('config.capture-ci.json', JSON.stringify(c, null, 2));
             console.log('capture:', JSON.stringify(c.capture));
           "
           $env:MOCK_HUB_CONFIG = 'config.capture-ci.json'
           $env:MOCK_HUB_DATA = 'data/ci'
-          Start-Process node -ArgumentList 'server.mjs' -WorkingDirectory $PWD `
+          $proc = Start-Process node -ArgumentList 'server.mjs' -WorkingDirectory $PWD -PassThru `
             -RedirectStandardOutput data/server.log -RedirectStandardError data/server.err.log
-          $up = $false
-          for ($i = 0; $i -lt 60; $i++) {
-            Start-Sleep -Milliseconds 250
+
+          function Wait-Tcp([int]$Port, [int]$TimeoutSec = 25) {
+            $deadline = (Get-Date).AddSeconds($TimeoutSec)
+            while ((Get-Date) -lt $deadline) {
+              $client = New-Object Net.Sockets.TcpClient
+              try {
+                $client.Connect('127.0.0.1', $Port)
+                if ($client.Connected) { return $true }
+              } catch {
+                Start-Sleep -Milliseconds 200
+              } finally {
+                $client.Dispose()
+              }
+            }
+            return $false
+          }
+
+          $httpUp = $false
+          for ($i = 0; $i -lt 80; $i++) {
             try {
               if ((Invoke-WebRequest 'http://127.0.0.1:8787/health' -TimeoutSec 1 -UseBasicParsing).StatusCode -eq 200) {
-                $up = $true; break
+                $httpUp = $true; break
               }
             } catch {}
+            Start-Sleep -Milliseconds 250
           }
-          if (-not $up) {
-            $log = (Get-Content data/server.err.log -Raw -ErrorAction SilentlyContinue)
-            Write-Host "::error::网关未就绪。stderr=$log"
-            exit 1
-          }
-          Start-Sleep -Seconds 2
-          Write-Host "网关已就绪"
+          $tcpUp = Wait-Tcp -Port 8443 -TimeoutSec 25
 
-      - name: 环境诊断
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          function Try-Report($label, $block) {
-            try { Write-Host ("{0}: {1}" -f $label, (& $block)) }
-            catch { Write-Host ("{0}: 检查失败 - {1}" -f $label, $_.Exception.Message) }
-          }
-          Try-Report 'pfx 存在'  { Test-Path 'data/certs/capture.pfx' }
-          Try-Report 'crt 存在'  { Test-Path 'data/certs/capture.crt' }
-          Try-Report '健康检查'  { (Invoke-WebRequest 'http://127.0.0.1:8787/health' -UseBasicParsing -TimeoutSec 3).StatusCode }
-          Try-Report '443 监听'  { (Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue).Count }
-          Try-Report 'server.log' {
-            $cap = Get-Content 'data/server.log' -Raw -ErrorAction SilentlyContinue
-            if ($cap) { "长度 $($cap.Length)，含 capture: $([bool]($cap -match 'capture'))" } else { '空' }
-          }
-          Try-Report 'server.err' {
-            $err = Get-Content 'data/server.err.log' -Raw -ErrorAction SilentlyContinue
-            if ($err) { $err.Substring(0, [Math]::Min(400, $err.Length)) } else { '空' }
-          }
+          $code = 1
+          try {
+            if (-not $httpUp) {
+              Write-Host '::error::8787 未就绪'
+            } elseif (-not $tcpUp) {
+              Write-Host '::error::8443 未监听（捕获服务没起来）'
+            } else {
+              $out = (node tools/test-capture.mjs 2>&1 | Out-String)
+              Write-Host $out
+              $code = $LASTEXITCODE
+              if ($code -ne 0) {
+                $tail = (($out -split "`r?`n") | Where-Object { $_ -match '✗|Error|error|ECONN|EADDR|Cannot' } | Select-Object -First 4) -join ' || '
+                if (-not $tail) { $tail = (($out -split "`r?`n") | Select-Object -Last 4) -join ' || ' }
+                $slog = Get-Content 'data/server.log' -Raw -ErrorAction SilentlyContinue
+                $elog = Get-Content 'data/server.err.log' -Raw -ErrorAction SilentlyContinue
+                $snip = { param($t) if ($t) { ($t -replace "`r?`n", ' | ').Substring(0, [Math]::Min(500, $t.Length)) } else { '(空)' } }
+                Write-Host "::error::test-capture 失败：$tail ~~~ server.log: $(& $snip $slog) ~~~ server.err: $(& $snip $elog)"
+              }
+            }
 
-      - name: 捕获链路测试
-        shell: pwsh
-        env:
-          CAP_PORT: '8443'
-        run: |
-          $out = (node tools/test-capture.mjs 2>&1 | Out-String)
-          Write-Host $out
-          if ($LASTEXITCODE -ne 0) {
-            $tail = (($out -split "`r?`n") | Where-Object { $_ -match '✗|Error|error|ECONN|EADDR|Cannot' } | Select-Object -First 4) -join ' || '
-            if (-not $tail) { $tail = (($out -split "`r?`n") | Select-Object -Last 4) -join ' || ' }
-            $slog = Get-Content 'data/server.log' -Raw -ErrorAction SilentlyContinue
-            $elog = Get-Content 'data/server.err.log' -Raw -ErrorAction SilentlyContinue
-            $snip = { param($t) if ($t) { ($t -replace "`r?`n", ' | ').Substring(0, [Math]::Min(500, $t.Length)) } else { '(空)' } }
-            Write-Host "::error::test-capture 失败：$tail ~~~ server.log: $(& $snip $slog) ~~~ server.err: $(& $snip $elog)"
-            exit 1
+            if ($code -ne 0) {
+              Write-Host '--- 诊断 ---'
+              Write-Host ("进程存活: " + ($proc -and -not $proc.HasExited))
+              Get-NetTCPConnection -LocalPort 8443, 8787 -ErrorAction SilentlyContinue |
+                Select-Object LocalAddress, LocalPort, State | Format-Table -AutoSize | Out-String | Write-Host
+              Write-Host '--- server.log ---'
+              Get-Content data/server.log -ErrorAction SilentlyContinue | Select-Object -Last 40
+              Write-Host '--- server.err.log ---'
+              Get-Content data/server.err.log -ErrorAction SilentlyContinue | Select-Object -Last 20
+            }
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
           }
+          exit $code
 
       - name: 收集日志
         if: always()

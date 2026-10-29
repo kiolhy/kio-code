@@ -1587,7 +1587,10 @@ function startCapture() {
       log('error', `capture 监听 ${host}:${port} 失败: ${e?.message ?? e}`);
     });
     captureServer.listen(port, host, () => {
-      log('info', `遥测捕获已开启 https://${host}:${port}`);
+      // 打真实监听地址：绑 0.0.0.0 时日志里的 host 和实际 socket 可能不是一回事
+      const addr = captureServer.address();
+      const real = typeof addr === 'object' && addr ? `${addr.address}:${addr.port}` : String(addr);
+      log('info', `遥测捕获已开启 https://${host}:${port}（实际监听 ${real}）`);
       console.log(`  捕获入口   https://${host}:${port}  (自签证书，hosts 指过来即可)`);
       console.log('');
     });
