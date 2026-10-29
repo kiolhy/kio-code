@@ -825,20 +825,32 @@ async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
 
 /** 网关模式：把 OpenAI 兼容请求转发到真实码道上游 */
 async function handleGateway(req, res, url, method, headers, reqId, started) {
-  const p = url.pathname.replace(/\/+$/, '') || '/v1';
+  // 归一化：/api/v2/chat/completions → /v1/chat/completions（码道 CLI 的原生路径）
+  const rawPath = url.pathname.replace(/\/+$/, '') || '/v1';
+  const p = /^\/(?:api\/v2\/)?chat\/completions$/.test(rawPath)
+    ? '/v1/chat/completions'
+    : rawPath;
 
   /* ---- 模型列表 ---- */
   if (p === '/v1/models' && method === 'GET') {
     const gw = cfg.gateway ?? {};
-    const list = gw.models ?? (cfg.models ?? []).map((m) => m.model_name).filter(Boolean);
+    // 优先用账号池探测到的真实模型；没探测过才退回配置里的静态清单
+    const catalog = buildCatalog(panel.state?.accounts ?? []);
+    const fromCatalog = catalog.models.map((m) => m.id).filter(Boolean);
+    const list = gw.models ?? (fromCatalog.length ? fromCatalog : (cfg.models ?? []).map((m) => m.model_name).filter(Boolean));
     return void sendJson(res, 200, {
       object: 'list',
-      data: list.map((id) => ({
-        id,
-        object: 'model',
-        created: Math.floor(Date.now() / 1000),
-        owned_by: gw.owner ?? 'codearts',
-      })),
+      data: list.map((id) => {
+        const m = catalog.models.find((x) => x.id === id);
+        return {
+          id,
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: gw.owner ?? 'codearts',
+          ...(m?.contextWindow ? { context_window: m.contextWindow } : {}),
+          ...(m?.maxTokens ? { max_tokens: m.maxTokens } : {}),
+        };
+      }),
     });
   }
 
@@ -1137,9 +1149,16 @@ const requestHandler = async (req, res) => {
     });
   }
 
-  /* ---------- 网关模式：真实上游（OpenAI 兼容入口） ---------- */
-  if (cfg.mode === 'gateway' && (url.pathname === '/v1' || url.pathname.startsWith('/v1/'))) {
-    return void handleGateway(req, res, url, method, headers, reqId, started);
+  /* ---------- 网关模式：真实上游 ---------- */
+  // OpenAI 兼容入口（/v1/*）+ 码道 CLI 原生入口（/api/v2/chat/completions）
+  if (cfg.mode === 'gateway') {
+    const gwPath = url.pathname.replace(/\/+$/, '');
+    const isOpenAI = gwPath === '/v1' || url.pathname.startsWith('/v1/');
+    const isCodeartsChat =
+      /^\/(?:api\/v2\/)?(?:v1\/)?chat\/completions$/.test(gwPath) && method === 'POST';
+    if (isOpenAI || isCodeartsChat) {
+      return void handleGateway(req, res, url, method, headers, reqId, started);
+    }
   }
 
   /* ---------- 读体 ---------- */

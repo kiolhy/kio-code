@@ -95,7 +95,8 @@ else { bad('造出原始请求', '没找到记录'); process.exit(1); }
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: rec.id }),
     })).json();
-    if (rep.ok && rep.status === 200 && rep.preview?.includes('mock-user')) ok('重放 GET', `${rep.status} 无 body`);
+    // 断言重放拿到了真实响应体（用户名来自 config.identity，不硬编码具体值）
+    if (rep.ok && rep.status === 200 && rep.preview?.includes('user_name')) ok('重放 GET', `${rep.status} 无 body`);
     else bad('重放 GET', JSON.stringify(rep).slice(0, 200));
   }
 }

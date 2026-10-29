@@ -1,7 +1,7 @@
 {
   "port": 8787,
   "host": "127.0.0.1",
-  "mode": "mock",
+  "mode": "gateway",
   "upstream": {
     "baseUrl": "http://127.0.0.1:8898",
     "apiBasePath": "/api/v2",
@@ -21,12 +21,12 @@
     "errorStatus": 500
   },
   "identity": {
-    "agentId": "mock-agent-0001",
+    "agentId": "codearts-agent",
     "codeAgentId": "a8bcb36232554267a5142361cc25a393",
-    "userName": "mock-user",
-    "userId": "00000000-0000-0000-0000-000000000001",
-    "domainId": "00000000-0000-0000-0000-0000000000ff",
-    "department": "华为集团",
+    "userName": "codearts-user",
+    "userId": "codearts-user-id",
+    "domainId": "codearts-domain-id",
+    "department": "",
     "stationType": "china",
     "isProd": false
   },
