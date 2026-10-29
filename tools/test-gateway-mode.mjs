@@ -13,6 +13,26 @@ const ok = (n, cond, d = '') => {
 
 /* ---- 假上游：记录收到的请求，返回一个真实的 OpenAI 形状响应 ---- */
 const captured = [];
+// 真实结构 fixture（取自 2026-10-29 实测）
+const REAL_AGENTS = { total: 17, agents: [{ agent_id: '9f0e5cb64a104dcfb4aa90dbedab7dcf', agent_name: 'CodeAgent', is_primary_agent: true, agent_type: 'openapi' }] };
+const REAL_DETAIL = {
+  agent_id: '9f0e5cb64a104dcfb4aa90dbedab7dcf',
+  agent_name: 'CodeAgent',
+  gpts: {
+    models: [
+      {
+        model_name: 'GLM-5.2', model_alias: 'GLM-5.2', model_type: 'admin',
+        model_parameters: { max_tokens: 65536, context_window: 202752, enable_queue: true, supports_prompt_cache: true },
+        credit: [{ input_from: 0, input_to: -1, output_from: 0, output_to: -1, input_price: '8', cache_price: '2', output_price: '28' }],
+      },
+      {
+        model_name: 'Kimi-K3', model_alias: 'kimi-k3', model_type: 'admin',
+        model_parameters: { max_tokens: 65536, context_window: 1048576, enable_queue: true, supports_prompt_cache: true },
+        credit: [{ input_from: 0, input_to: -1, output_from: 0, output_to: -1, input_price: '20', cache_price: '2', output_price: '100' }],
+      },
+    ],
+  },
+};
 const upstream = http.createServer((req, res) => {
   let raw = '';
   req.on('data', (c) => (raw += c));
@@ -20,6 +40,21 @@ const upstream = http.createServer((req, res) => {
     let body = null;
     try { body = JSON.parse(raw); } catch { /* ignore */ }
     captured.push({ method: req.method, path: req.url, headers: req.headers, body, raw });
+
+    // CLI 的模型发现接口 → 返回真实结构
+    if (/\/agent-center\/agents\/useragents/.test(req.url)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(REAL_AGENTS));
+    }
+    if (/\/agent-center\/agents\/detail/.test(req.url)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(REAL_DETAIL));
+    }
+    if (/\/snap-manager\/v1\/current\/user/.test(req.url)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ domain_id: 'd1', domain_name: 'dn', user_id: 'u1', user_name: 'hid_test_user', app_types: null, user_type: null }));
+    }
+
     if (body?.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ id: 'chatcmpl-1', object: 'chat.completion.chunk', choices: [{ delta: { content: '真' } }] })}\n\n`);
@@ -175,6 +210,62 @@ if (gwBase) {
     ok('上游收到 stream:true', captured[0]?.body?.stream === true);
   }
 
+  console.log('\n\x1b[1m[6] 下游能拿到真实模型（CLI 模型发现链路）\x1b[0m');
+  {
+    // 6.1 CLI 先问 agent 列表
+    captured.length = 0;
+    const r1 = await fetch(`${gwBase}/api/v2/v1/agent-center/agents/useragents?offset=0&limit=100`, {
+      headers: { 'x-current-user': 'hid_test_user' },
+    });
+    const j1 = await r1.json();
+    ok('useragents 200', r1.status === 200, String(r1.status));
+    ok('拿到真实 total=17', j1?.total === 17, String(j1?.total));
+    ok('请求转发到上游', captured.length === 1, `${captured.length} 次`);
+    ok('上游路径保留', captured[0]?.path?.includes('/v1/agent-center/agents/useragents'), captured[0]?.path);
+    ok('元数据也带签名', String(captured[0]?.headers?.authorization).startsWith('SDK-HMAC-SHA256'), String(captured[0]?.headers?.authorization).slice(0, 40));
+    ok('元数据带 Agent-Type', captured[0]?.headers['agent-type'] === 'AgentCenter', captured[0]?.headers['agent-type']);
+    ok('元数据带 X-Language', captured[0]?.headers['x-language'] === 'zh-cn', captured[0]?.headers['x-language']);
+    ok('x-current-user 用账号真实名', captured[0]?.headers['x-current-user'] === 'hid_test_user', captured[0]?.headers['x-current-user']);
+
+    // 6.2 再问 agent 详情 → 这就是 CLI 的模型来源
+    captured.length = 0;
+    const agentId = j1?.agents?.[0]?.agent_id;
+    const r2 = await fetch(`${gwBase}/api/v2/v1/agent-center/agents/detail?agent_id=${agentId}`);
+    const j2 = await r2.json();
+    ok('detail 200', r2.status === 200, String(r2.status));
+    const models = j2?.gpts?.models ?? [];
+    ok('拿到真实模型 2 个', models.length === 2, String(models.length));
+    ok('模型名是 GLM-5.2', models[0]?.model_name === 'GLM-5.2', models[0]?.model_name);
+    ok('带真实价格', models[0]?.credit?.[0]?.input_price === '8', JSON.stringify(models[0]?.credit?.[0] ?? {}));
+    ok('带上下文窗口', models[0]?.model_parameters?.context_window === 202752, String(models[0]?.model_parameters?.context_window));
+    ok('detail 转发到上游', captured.length === 1);
+    ok('agent_id 透传', captured[0]?.path?.includes(`agent_id=${agentId}`), captured[0]?.path);
+
+    // 6.3 用拿到的模型名真的能调通
+    captured.length = 0;
+    const r3 = await fetch(`${gwBase}/api/v2/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: models[0].model_name, messages: [{ role: 'user', content: '用真实模型名调用' }] }),
+    });
+    const j3 = await r3.json();
+    ok('用真实模型名调用成功', r3.status === 200, String(r3.status));
+    ok('上游收到该模型', captured[0]?.body?.model === 'GLM-5.2', captured[0]?.body?.model);
+    ok('返回真实内容', j3?.choices?.[0]?.message?.content === '真实上游回复');
+  }
+
+  console.log('\n\x1b[1m[7] 上游挂掉时回落（用探测结果，不用假数据）\x1b[0m');
+  {
+    // 让上游直接断开
+    upstream.close();
+    await new Promise((r) => setTimeout(r, 200));
+    const r = await fetch(`${gwBase}/api/v2/v1/agent-center/agents/detail?agent_id=X`);
+    const j = await r.json();
+    ok('回落返回 200', r.status === 200, String(r.status));
+    ok('回落结构可解析', !!j?.gpts, JSON.stringify(j).slice(0, 120));
+    // 账号池没探测过 → 模型为空，但结构正确（不会返回 mock-flagship）
+    ok('回落不含 mock 模型', !JSON.stringify(j).includes('mock-'), JSON.stringify(j).slice(0, 150));
+  }
   console.log('\n\x1b[1m[5] 用量落库（真实 token 数）\x1b[0m');
   {
     // 面板 API 要登录，直接读落盘文件验证

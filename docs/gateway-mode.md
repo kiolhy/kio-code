@@ -38,6 +38,38 @@ CLI  ──POST /api/v2/chat/completions──▶  网关
 
 `/api/v2/chat/completions` 在 `handleGateway` 里归一化成 `/v1/chat/completions` 处理。
 
+### CLI 元数据接口：真实转发（关键）
+
+CLI 判断「有哪些模型可用」靠的是 **`agent-center/agents/detail` 的 `gpts.models`**，
+不是 `/v1/models`。所以 gateway 模式必须把这个接口也真实转发，否则下游看到的还是本地假模型。
+
+`GW_META_ROUTES` 里这些路径走 `handleGatewayMeta()` → `forwardRawOnce()`：
+
+| 路径 | 作用 |
+|---|---|
+| `/v1/agent-center/agents/useragents` | CLI 拉 agent 列表 |
+| `/v1/agent-center/agents/detail` | **CLI 拉模型清单 + 价格** |
+| `/v1/agent-center/built-in-tools` | 内置工具 |
+| `/v1/skills-rules/list` | 技能规则 |
+| `/v1/gateway-config` | 网关配置 |
+| `/v1/model/thinking-variants` | 思考变体 |
+| `/v1/model/builtin` | 内置模型 |
+| `/snap-manager/v1/current/user` | 当前用户 |
+| `/snap-manager/v1/privacy` | 隐私开关 |
+| `/api/v1/user/tokens/balance` | 余额 |
+| `/api/v1/gateway/config` | 免费权益模型 |
+| `/api/v1/benefit/claim` | 领取权益 |
+
+`forwardRawOnce()` 的特点：
+
+- **不改 body、不改路径**，原样转发
+- 重造签名头（`SDK-HMAC-SHA256` + `X-Security-Token` + `app-id`）
+- `x-current-user` 用账号真实 `userName`
+- `agent-center` 路径自动补 `Agent-Type: AgentCenter` + `X-Language: zh-cn`
+
+**上游失败时**回落到 `fallbackMeta()`：用账号池探测结果本地构造，
+结构完全一致（`gpts.models` / `credit[]` / `model_parameters`），**不含任何 mock 模型名**。
+
 ### 出站请求头（实测对齐 CLI）
 
 ```
@@ -159,7 +191,7 @@ $env:PLUGIN_ENV = "hc"
 ## 九、测试
 
 ```
-npm run test:gateway-mode   # 28 项：真实转发 / 签名头 / 流式 / 用量落库
+npm run test:gateway-mode   # 49 项：真实转发 / 签名头 / 模型发现 / 流式 / 用量落库
 ```
 
 测试用假上游观察出站请求，验证：
@@ -169,3 +201,5 @@ npm run test:gateway-mode   # 28 项：真实转发 / 签名头 / 流式 / 用�
 - `user_prompt` / `max_tokens` 被补全
 - 流式 SSE 透传 + `[DONE]`
 - 用量落盘含 `promptTokens` / `cachedTokens` / `cacheRatio` / `accountName`
+- **CLI 模型发现链路**：`useragents` → `detail` → 拿到真实模型名和价格 → 用该名字调用成功
+- 上游挂掉时回落结构正确，且不含 mock 模型名

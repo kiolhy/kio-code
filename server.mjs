@@ -15,6 +15,7 @@ import { createPanel, publicAccount } from './lib/panel.mjs';
 import {
   forwardChatOnce,
   forwardChatStream,
+  forwardRawOnce,
   anthropicToOpenAI,
   openAIToAnthropic,
   pickCredentials,
@@ -824,6 +825,153 @@ async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
 }
 
 /** 网关模式：把 OpenAI 兼容请求转发到真实码道上游 */
+/**
+ * gateway 模式下需要真实转发给上游的 CLI 元数据接口。
+ * 这些接口决定「下游能看到哪些模型」——必须来自真实上游，不能用本地假数据。
+ */
+const GW_META_ROUTES = new Set([
+  '/api/v2/v1/agent-center/agents/useragents',
+  '/v1/agent-center/agents/useragents',
+  '/api/v2/v1/agent-center/agents/detail',
+  '/v1/agent-center/agents/detail',
+  '/api/v2/v1/agent-center/built-in-tools',
+  '/v1/agent-center/built-in-tools',
+  '/api/v2/v1/skills-rules/list',
+  '/v1/skills-rules/list',
+  '/api/v2/v1/gateway-config',
+  '/v1/gateway-config',
+  '/api/v2/v1/model/thinking-variants',
+  '/v1/model/thinking-variants',
+  '/v1/model/builtin',
+  '/snap-manager/v1/current/user',
+  '/snap-manager/v1/privacy',
+  '/api/v1/user/tokens/balance',
+  '/api/v1/gateway/config',
+  '/api/v1/benefit/claim',
+]);
+
+/**
+ * 把 CLI 的元数据请求真实转发到上游（不改 body、不改路径）。
+ * 失败时回落到本地构造（用账号池探测结果），保证 CLI 不至于完全起不来。
+ */
+async function handleGatewayMeta(req, res, url, method, headers, reqId, started) {
+  let rawBody = Buffer.alloc(0);
+  try {
+    rawBody = await readBody(req, cfg.maxBodyBytes ?? 67108864);
+  } catch {
+    rawBody = Buffer.alloc(0);
+  }
+
+  const ctx = { authAccount: panel.pickAccount(null) };
+  const path = url.pathname.replace(/\/+$/, '');
+
+  try {
+    const r = await forwardRawOnce({
+      method,
+      path,
+      search: url.search || '',
+      headers,
+      cfg,
+      panel,
+      ctx,
+      bodyText: rawBody.length ? rawBody.toString('utf8') : '',
+    });
+
+    store.recordRequest({
+      id: reqId, ts: new Date().toISOString(), method, route: 'gateway.meta', path,
+      query: url.search || undefined, status: r.status, durMs: Date.now() - started,
+      mode: 'gateway', upstream: r.upstreamUrl, reqBytes: rawBody.length, resBytes: r.body.length,
+    }, null);
+
+    // 原样回给 CLI
+    const out = { 'content-type': r.headers['content-type'] ?? 'application/json' };
+    res.writeHead(r.status, out);
+    res.end(r.body);
+    log('info', `gateway.meta ${method} ${path} → ${r.status} (${r.body.length}B)`);
+    return;
+  } catch (e) {
+    // 回落：用账号池探测结果本地构造（只对几个关键接口）
+    const fb = fallbackMeta({ path, method, url, panel, cfg });
+    if (fb) {
+      const bytes = sendJson(res, fb.status, fb.json);
+      store.recordRequest({
+        id: reqId, ts: new Date().toISOString(), method, route: 'gateway.meta.fallback', path,
+        status: fb.status, durMs: Date.now() - started, mode: 'gateway',
+        reqBytes: rawBody.length, resBytes: bytes, error: e?.code ?? 'upstream_error',
+      }, null);
+      log('warn', `gateway.meta ${path} 上游失败，用本地探测结果回落：${e?.message ?? e}`);
+      return;
+    }
+    sendJson(res, 502, { error: { code: e?.code ?? 'upstream_error', message: String(e?.message ?? e) } });
+  }
+}
+
+/** 上游不可用时的本地回落（数据来自真实探测，不是编的） */
+function fallbackMeta({ path, method, url, panel, cfg }) {
+  const catalog = buildCatalog(panel.state?.accounts ?? []);
+  const models = catalog.models;
+
+  if (/\/agent-center\/agents\/detail$/.test(path)) {
+    const agentId = url.searchParams.get('agent_id') ?? '';
+    return {
+      status: 200,
+      json: {
+        agent_id: agentId,
+        agent_name: 'CodeAgent',
+        gpts: {
+          models: models.map((m) => ({
+            model_name: m.id,
+            model_alias: m.alias ?? m.id,
+            model_type: 'admin',
+            model_parameters: {
+              max_tokens: m.maxTokens ?? null,
+              context_window: m.contextWindow ?? null,
+              enable_queue: m.queue === true,
+              supports_prompt_cache: m.promptCache === true,
+            },
+            credit: (m.tiers ?? []).map((t) => ({
+              input_from: t.inputFrom,
+              input_to: t.inputTo,
+              output_from: t.outputFrom,
+              output_to: t.outputTo,
+              input_price: t.input == null ? null : String(t.input),
+              cache_price: t.cache == null ? null : String(t.cache),
+              output_price: t.output == null ? null : String(t.output),
+            })),
+          })),
+        },
+      },
+    };
+  }
+
+  if (/\/agent-center\/agents\/useragents$/.test(path)) {
+    return {
+      status: 200,
+      json: {
+        total: 1,
+        agents: [{ agent_id: cfg.identity?.codeAgentId ?? 'CodeAgent', agent_name: 'CodeAgent', is_primary_agent: true, agent_type: 'openapi' }],
+      },
+    };
+  }
+
+  if (/\/snap-manager\/v1\/current\/user$/.test(path)) {
+    const acc = panel.state?.accounts?.[0] ?? {};
+    return {
+      status: 200,
+      json: {
+        domain_id: acc.domainId ?? cfg.identity?.domainId ?? '',
+        domain_name: acc.domainName ?? '',
+        user_id: acc.userId ?? cfg.identity?.userId ?? '',
+        user_name: acc.userName ?? cfg.identity?.userName ?? '',
+        app_types: null,
+        user_type: null,
+      },
+    };
+  }
+
+  return null;
+}
+
 async function handleGateway(req, res, url, method, headers, reqId, started) {
   // 归一化：/api/v2/chat/completions → /v1/chat/completions（码道 CLI 的原生路径）
   const rawPath = url.pathname.replace(/\/+$/, '') || '/v1';
@@ -1158,6 +1306,10 @@ const requestHandler = async (req, res) => {
       /^\/(?:api\/v2\/)?(?:v1\/)?chat\/completions$/.test(gwPath) && method === 'POST';
     if (isOpenAI || isCodeartsChat) {
       return void handleGateway(req, res, url, method, headers, reqId, started);
+    }
+    // CLI 的模型发现 / agent 元数据：原样真实转发到上游，让下游拿到真实模型清单
+    if (GW_META_ROUTES.has(gwPath)) {
+      return void handleGatewayMeta(req, res, url, method, headers, reqId, started);
     }
   }
 
