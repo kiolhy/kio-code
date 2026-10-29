@@ -225,6 +225,11 @@
     "proxy": "",
     "deviceAuthorizationUrl": "",
     "cliAuthPageUrl": "https://codearts.huaweicloud.com/portal/settings/cli-auth",
+    "refresh": {
+      "enabled": true,
+      "checkMs": 300000,
+      "leadMs": 900000
+    },
     "codearts": {
       "authorizeBase": "https://codearts.huaweicloud.com/portal",
       "tokenUrl": "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens",

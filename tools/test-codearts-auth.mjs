@@ -1,7 +1,7 @@
 // 码道真实登录协议：授权码+PKCE+DPoP / ticket 交换 / 刷新（假服务器校验请求形状）
 import http from 'node:http';
 import { createCodeartsAuth, CodeartsAuthError, CODEARTS_DEFAULTS } from '../lib/codearts-auth.mjs';
-import { decodeDpopProof, verifyDpopProof } from '../lib/dpop.mjs';
+import { decodeDpopProof, verifyDpopProof, generateDpopKeyPair } from '../lib/dpop.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -64,7 +64,12 @@ const makeCfg = () => ({
 
 const makePanel = () => {
   const added = [];
-  return { added, addAccount(a) { const acc = { id: 'acc-' + (added.length + 1), ...a }; added.push(acc); return acc; } };
+  return {
+    added,
+    addAccount(a) { const acc = { id: 'acc-' + (added.length + 1), ...a }; added.push(acc); return acc; },
+    updateAccount(id, patch) { const acc = added.find((x) => x.id === id); if (!acc) return null; Object.assign(acc, patch); return acc; },
+    accounts() { return added; },
+  };
 };
 
 console.log('\n\x1b[1m[1] 真实常量\x1b[0m');
@@ -130,19 +135,74 @@ console.log('\n\x1b[1m[4] secret → ticket 交换\x1b[0m');
   ok('过期时间来自 ticket', panel.added[0].expiresAt === '2033-01-01T00:00:00Z');
 }
 
-console.log('\n\x1b[1m[5] 刷新 token\x1b[0m');
+console.log('\n\x1b[1m[5] 刷新 token（真实 DPoP 密钥）\x1b[0m');
 {
   const a = createCodeartsAuth({ cfg: makeCfg(), panel: makePanel() });
+  const kp = generateDpopKeyPair();
   const r = await a.refresh({
     refreshToken: 'old-refresh',
-    dpopKeyPair: { publicJwk: { kty: 'EC' }, privatePem: 'x' },
+    dpopKeyPair: { publicJwk: kp.publicJwk, privatePem: kp.privatePem },
     accountId: 'dom-1',
-  }).catch((e) => ({ err: e }));
-  // privatePem 'x' 不是合法密钥 → 预期抛错；这里只验证参数校验路径
-  ok('非法 dpop 私钥会抛错', !!r.err, r.err?.code ?? '');
+  });
+  ok('刷新返回新凭据', r.cred.accessKeyId === 'REFAK', r.cred.accessKeyId);
+  ok('刷新返回新 refresh', r.refreshToken === 'new-refresh', r.refreshToken);
+  ok('刷新请求 grant_type=refresh_token', lastToken.form.grant_type === 'refresh_token');
+  ok('刷新请求带 x-agent-user-account', lastToken.hdrs['x-agent-user-account'] === 'dom-1', lastToken.hdrs['x-agent-user-account']);
+  ok('刷新请求带 DPoP', !!lastToken.dpop);
 }
 
-console.log('\n\x1b[1m[6] 错误路径\x1b[0m');
+console.log('\n\x1b[1m[6] 账号就地续期（refreshAccount）\x1b[0m');
+{
+  const panel = makePanel();
+  const a = createCodeartsAuth({ cfg: makeCfg(), panel });
+  const kp = generateDpopKeyPair();
+  const acc = panel.addAccount({
+    name: '续期测试',
+    authType: 'sts',
+    accessKeyId: 'OLD_AK',
+    secretAccessKey: 'OLD_SK',
+    securityToken: 'OLD_ST',
+    expiresAt: '2020-01-01T00:00:00Z',
+    domainId: 'dom-9',
+    note: JSON.stringify({ source: 'codearts-oauth', refresh: 'old-refresh', dpop: { publicJwk: kp.publicJwk, privatePem: kp.privatePem } }),
+  });
+
+  const r = await a.refreshAccount(acc);
+  ok('续期返回账号', !!r.account);
+  ok('AK 已更新', r.account.accessKeyId === 'REFAK', r.account.accessKeyId);
+  ok('SK 已更新', r.account.secretAccessKey === 'REFSK');
+  ok('token 已更新', r.account.securityToken === 'REFST');
+  ok('过期时间已更新', r.account.expiresAt === '2032-01-01T00:00:00Z', r.account.expiresAt);
+  ok('refresh 已轮换', String(r.account.note).includes('new-refresh'));
+  ok('dpop 保留', String(r.account.note).includes('privatePem'));
+  ok('没有新增账号（就地更新）', panel.added.length === 1);
+
+  await (async () => {
+    const plain = panel.addAccount({ name: '无凭据', authType: 'sts', accessKeyId: 'A', secretAccessKey: 'B' });
+    try { await a.refreshAccount(plain); ok('无 refresh 材料抛错', false); }
+    catch (e) { ok('无 refresh 材料抛错', e.code === 'no_refresh_material', e.code); }
+  })();
+}
+
+console.log('\n\x1b[1m[7] 批量续期（refreshExpiring）\x1b[0m');
+{
+  const panel = makePanel();
+  const a = createCodeartsAuth({ cfg: makeCfg(), panel });
+  const kp = generateDpopKeyPair();
+  const soon = new Date(Date.now() + 60000).toISOString();   // 1 分钟后过期 → 该续
+  const far = new Date(Date.now() + 86400000).toISOString(); // 1 天后 → 不该动
+  panel.addAccount({ name: '快过期', authType: 'sts', accessKeyId: 'A1', secretAccessKey: 'B1', expiresAt: soon, note: JSON.stringify({ refresh: 'r1', dpop: { publicJwk: kp.publicJwk, privatePem: kp.privatePem } }) });
+  panel.addAccount({ name: '还早', authType: 'sts', accessKeyId: 'A2', secretAccessKey: 'B2', expiresAt: far, note: JSON.stringify({ refresh: 'r2', dpop: { publicJwk: kp.publicJwk, privatePem: kp.privatePem } }) });
+
+  const r = await a.refreshExpiring({ leadMs: 900000 });
+  ok('只检查到 1 个', r.checked === 1, `checked=${r.checked}`);
+  ok('续期 1 个', r.refreshed === 1, `refreshed=${r.refreshed}`);
+  ok('没有失败', r.failed.length === 0, JSON.stringify(r.failed));
+  ok('快过期账号已换新 AK', panel.added[0].accessKeyId === 'REFAK');
+  ok('远期账号没被动', panel.added[1].accessKeyId === 'A2', panel.added[1].accessKeyId);
+}
+
+console.log('\n\x1b[1m[8] 错误路径\x1b[0m');
 {
   const a = createCodeartsAuth({ cfg: makeCfg(), panel: makePanel() });
   await (async () => {

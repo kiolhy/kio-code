@@ -11,7 +11,7 @@ import { createStore, maskHeaders, maskValue } from './lib/store.mjs';
 import { buildHandlers, streamOpenAI, streamAnthropic, handleOtlp } from './lib/mock.mjs';
 import { proxyToUpstream } from './lib/proxy.mjs';
 import { buildRipgrepStubZip } from './lib/zip.mjs';
-import { createPanel } from './lib/panel.mjs';
+import { createPanel, publicAccount } from './lib/panel.mjs';
 import {
   forwardChatOnce,
   forwardChatStream,
@@ -425,6 +425,13 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       const acc = panel.updateAccount(seg[1], body);
       if (!acc) return void sendJson(res, 404, { error: { code: 'not_found' } });
       return void sendJson(res, 200, { ok: true, account: publicAccountSafe(acc) });
+    }
+
+    if (seg[0] === 'accounts' && seg[1] && seg[2] === 'refresh' && method === 'POST') {
+      const acc = panel.findAccount(seg[1]);
+      if (!acc) return void sendJson(res, 404, { error: { code: 'not_found' } });
+      const r = await codeartsAuth.refreshAccount(acc);
+      return void sendJson(res, 200, { ok: true, ...r, account: publicAccount(r.account) });
     }
 
     if (seg[0] === 'accounts' && seg[1] && method === 'DELETE') {
@@ -873,13 +880,7 @@ if (p === '/v1/messages' && method === 'POST') {
 
 /** 账号对象脱敏（给 API 用） */
 function publicAccountSafe(acc) {
-  const { secretAccessKey, securityToken, ...rest } = acc;
-  return {
-    ...rest,
-    accessKeyId: rest.accessKeyId ? `${String(rest.accessKeyId).slice(0, 4)}****` : '',
-    hasSecret: !!secretAccessKey,
-    hasToken: !!securityToken,
-  };
+  return publicAccount(acc);
 }
 
 
@@ -1749,6 +1750,25 @@ if (cfg.update?.enabled !== false && autoCheckMs > 0) {
       .catch((e) => log('warn', `自动检查更新失败：${e?.message ?? e}`));
   }, autoCheckMs);
   timer.unref();
+}
+
+/* 定时续期码道 STS 账号：过期前用 refresh_token + dpop 自动换新，不用重新登录 */
+const refreshCfg = cfg.oauth?.refresh ?? {};
+if ((cfg.oauth?.mode ?? 'sts') === 'codearts' && refreshCfg.enabled !== false) {
+  const checkMs = Number(refreshCfg.checkMs ?? 300000);
+  const leadMs = Number(refreshCfg.leadMs ?? 900000);
+  if (checkMs > 0) {
+    const timer = setInterval(() => {
+      codeartsAuth
+        .refreshExpiring({ leadMs })
+        .then((r) => {
+          if (r.refreshed) log('info', `账号自动续期：${r.refreshed}/${r.checked} 成功`);
+          for (const f of r.failed) log('warn', `账号续期失败 ${f.id}：${f.error}`);
+        })
+        .catch((e) => log('warn', `自动续期失败：${e?.message ?? e}`));
+    }, checkMs);
+    timer.unref();
+  }
 }
 
 /* ------------------------------------------------------------------ */

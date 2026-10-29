@@ -123,9 +123,36 @@ GET  https://codearts.huaweicloud.com/portal/authorize?...  → 200 text/html（
 POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
      不带 DPoP → 400 {"error_code":"APIGW.0106","error_msg":"...Invalid header parameter: DPoP, required"}
      带 DPoP  → 400 {"error_code":"STS5.1805","error_msg":"invalid authorization code"}
+     refresh  → 400 {"error_code":"STS5.1806","error_msg":"invalid refresh token: 'decode jwt header failed'"}
 ```
 
-也就是说：DPoP 证明被接受、`client_id=CodeArts_Tui` 被接受、请求形状正确，只差一个真实授权码。
+也就是说：DPoP 证明被接受、`client_id=CodeArts_Tui` 被接受、`grant_type=authorization_code` 与
+`grant_type=refresh_token` 两条链路都走到了正确的校验层，只差真实授权码 / 真实 refresh token。
+
+## 自动续期（STS 过期前换新，不用重新登录）
+
+码道 OAuth 账号入库时，`refresh_token` 和 `dpop_key_pair` 存在账号的 `note` 里（`publicAccount` 只对外给
+「可自动续期」标记，不泄露私钥）。续期就是 `POST token`，`grant_type=refresh_token` + 同一把 DPoP 密钥。
+
+两种触发：
+
+1. **后台自动**：`config.oauth.refresh` 控制，默认每 5 分钟扫一次，把 15 分钟内将过期的账号续掉。
+2. **面板手动**：账号行上出现「续期」按钮（`canRefresh=true` 时），或调
+   `POST /panel/api/accounts/{id}/refresh`。
+
+```jsonc
+"oauth": {
+  "refresh": {
+    "enabled": true,
+    "checkMs": 300000,   // 扫描间隔
+    "leadMs": 900000     // 提前多久续（15 分钟）
+  }
+}
+```
+
+续期成功会**就地更新**账号（AK/SK/SecurityToken/过期时间），并把 `refresh_token` 轮换成新的；
+不会新增账号，也不会改动 `dpop_key_pair`。没有 refresh 材料的账号（手动粘 AK/SK、或 auth.json 导入）
+调用续期会明确返回 `no_refresh_material`。
 
 ### 远程部署怎么用
 
@@ -165,6 +192,7 @@ POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
 | GET | `/panel/api/oauth/status?state=…` | 需要面板登录态；轮询授权结果 |
 | GET | `/oauth/callback?code=…&state=…` | 无需登录态（华为云回调）；换凭据 + 入库 |
 | POST | `/panel/api/accounts/import-auth` | 需要面板登录态；粘贴 auth.json 导入账号 |
+| POST | `/panel/api/accounts/{id}/refresh` | 需要面板登录态；就地续期（refresh_token + DPoP） |
 
 ## 安全边界
 
@@ -178,7 +206,7 @@ POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
 
 ```bash
 npm run test:oauth      # 56 项：链接生成 / code→STS→入库 / 轮询 / 错误路径 / DPoP / 设备码 / auth.json 导入
-npm run test:codearts   # 37 项：真实授权链接 / PKCE / DPoP 请求形状 / code→token / secret→ticket / 刷新 / 错误路径
+npm run test:codearts   # 55 项：真实授权链接 / PKCE / DPoP 请求形状 / code→token / secret→ticket / 续期 / 批量续期 / 错误路径
 ```
 
 `tools/test-oauth.mjs` / `tools/test-codearts-auth.mjs` 用本地假服务器跑全程（校验请求形状与签名），不碰真实网络。

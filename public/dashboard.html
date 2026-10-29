@@ -446,6 +446,7 @@ async function loadAccounts() {
         <td class="muted">${ago(a.lastUsedAt)}</td>
         <td class="num">
           <button class="sm" onclick="toggleAccount('${a.id}',${!a.enabled})">${a.enabled ? '停用' : '启用'}</button>
+          ${a.canRefresh ? `<button class="sm" onclick="refreshAccount('${a.id}')">续期</button>` : ''}
           <button class="sm" onclick="editAccount('${a.id}')">编辑</button>
           <button class="sm danger" onclick="delAccount('${a.id}')">删除</button>
         </td>
@@ -605,6 +606,13 @@ async function delAccount(id) {
   if (!confirm('确定删除这个账号？')) return;
   try { await api('/accounts/' + id, { method: 'DELETE' }); toast('已删除'); loadAccounts(); loadOverview(); }
   catch (e) { toast(e.message, true); }
+}
+async function refreshAccount(id) {
+  try {
+    const j = await api('/accounts/' + id + '/refresh', { method: 'POST', body: '{}' });
+    toast('续期成功' + (j.expiresAt ? '，新过期时间 ' + new Date(j.expiresAt).toLocaleString('zh-CN') : ''));
+    loadAccounts(); loadOverview();
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ---------------- Key ---------------- */
