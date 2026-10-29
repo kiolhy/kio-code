@@ -17,7 +17,7 @@ import {
 } from '../lib/stealth.mjs';
 import { createGovernor, parseRetryAfter } from '../lib/pacing.mjs';
 import { createTransport, buildTlsOptions } from '../lib/transport.mjs';
-import { buildUpstreamHeaders, detectUpstreamBizError } from '../lib/gateway.mjs';
+import { buildUpstreamHeaders, detectUpstreamBizError, modelDisplayName } from '../lib/gateway.mjs';
 import { verifyRequest } from '../lib/sign.mjs';
 
 let pass = 0;
@@ -44,7 +44,13 @@ console.log('\n\x1b[1m[1] 默认画像\x1b[0m');
 {
   const p = resolveProfile({});
   ok('UA 是 Bun 运行时', p.userAgent === 'Bun/1.3.14', p.userAgent);
-  ok('插件名 codearts-cli', p.pluginName === 'codearts-cli', p.pluginName);
+  // 实测 ~/.codeartsdoer 日志里 CLI 自报的就是 "CLI"，不是 codearts-cli
+  ok('插件名 CLI（实测值）', p.pluginName === 'CLI', p.pluginName);
+  ok('IDE 名 CLI（实测值）', p.ideName === 'CLI', p.ideName);
+  ok('客户端类型 CLI（实测值）', p.clientType === 'CLI', p.clientType);
+  ok('otClientType CLI', p.otClientType === 'CLI', p.otClientType);
+  ok('client-ip 198.18.0.1（实测值）', p.clientIp === '198.18.0.1', p.clientIp);
+  ok('maas_type 默认不发', p.maasType === '', JSON.stringify(p.maasType));
   ok('otClientVersion 跟随 pluginVersion', p.otClientVersion === p.pluginVersion, p.otClientVersion);
   ok('画像本身不带网关特征', findIdentityLeaks(buildTransportHeaders(p)).length === 0);
   ok('能识别出网关 UA 泄漏', findIdentityLeaks({ 'user-agent': 'kio-code-gateway/1.0' }).length > 0);
@@ -60,13 +66,14 @@ const account = { id: 'acc_test1', ref: 'acc_test1', userName: 'tester', securit
 
   ok('有 x-ot-trace-id（32 hex）', /^[0-9a-f]{32}$/.test(h['x-ot-trace-id'] ?? ''), h['x-ot-trace-id']);
   ok('有 x-ot-span-id（16 hex）', /^[0-9a-f]{16}$/.test(h['x-ot-span-id'] ?? ''), h['x-ot-span-id']);
-  ok('有 x-snap-traceid（32 hex）', /^[0-9a-f]{32}$/.test(h['x-snap-traceid'] ?? ''), h['x-snap-traceid']);
-  ok('user-msg-id 是 UUID', /^[0-9a-f-]{36}$/.test(h['user-msg-id'] ?? ''), h['user-msg-id']);
+  ok('有 x-snap-traceid（<32hex>_<16hex>）', /^[0-9a-f]{32}_[0-9a-f]{16}$/.test(h['x-snap-traceid'] ?? ''), h['x-snap-traceid']);
+  ok('user-msg-id 是 msg_ 前缀', /^msg_[0-9a-f]{13}[0-9A-Za-z]{17}$/.test(h['user-msg-id'] ?? ''), h['user-msg-id']);
   ok('model-id / model-name 一致', h['model-id'] === 'deepseek-v3.2' && h['model-name'] === 'deepseek-v3.2');
   ok('x-ot-function = agent-tui', h['x-ot-function'] === 'agent-tui');
   ok('x-ot-client-type = CLI', h['x-ot-client-type'] === 'CLI');
   ok('app-id = CodeAgent3.0', h['app-id'] === 'CodeAgent3.0');
-  ok('maas_type = benefit', h.maas_type === 'benefit');
+  // 实测 CLI 的 maas_type 是空（日志 `maas_type: ,`），即不发这个头
+  ok('maas_type 不发（实测 CLI 为空）', !('maas_type' in h));
   ok('is_confidential = false', h.is_confidential === 'false');
   ok('部门被 encode', h.depart === encodeURIComponent('某事业部'), h.depart);
   ok('x-security-token 带上', h['x-security-token'] === 'TOK-1');
@@ -282,7 +289,7 @@ console.log('\n\x1b[1m[10] maas_type 按套餐状态选择\x1b[0m');
   const p2 = resolveProfile({ stealth: { profile: {} } }, { maasType: 'benefit' });
   ok('benefit 正常覆盖', p2.maasType === 'benefit');
   const p3 = resolveProfile({ stealth: { profile: {} } });
-  ok('不传时保留默认', p3.maasType === 'benefit', p3.maasType);
+  ok('不传时保留默认（空 = 不发）', p3.maasType === '', JSON.stringify(p3.maasType));
 
   // 空 maas_type 不进签名头
   const h = buildSignableHeaders({
@@ -329,6 +336,90 @@ console.log('\n\x1b[1m[11] 上游业务错误识别（HTTP 200 但失败）\x1b[
   ok('非 JSON 不算错', detectUpstreamBizError(200, Buffer.from('data: hello')) === null);
   ok('非 200 不处理', detectUpstreamBizError(500, mk({ error_code: '4004' })) === null);
   ok('空 body 不算错', detectUpstreamBizError(200, Buffer.alloc(0)) === null);
+}
+
+console.log('\n\x1b[1m[12] 请求级 id 格式对齐真 CLI\x1b[0m');
+{
+  // 实测样本（~/.codeartsdoer/cli-data/log 的 [header-debug]）：
+  //   x-ot-trace-id    a3c53e942754427f910ea068dc54200e      32 hex
+  //   x-ot-span-id     1046d5d879da6608                      16 hex
+  //   x-snap-traceid   58dc923a137146d3a4b33bff795b0bd0_a77ffb793148466a
+  //   x-ot-session-id  ses_e7e55d3daffekburR2EHBb6EGE
+  //   user-msg-id      msg_181aa30020014NTr39NQypfP4u
+  //   created-time     2026-10-28T08:39:41Z
+  const prof = resolveProfile({});
+  const mk = () => buildSignableHeaders({
+    cfg: {}, account: { id: 'a', userName: 'u' }, model: 'GLM-5.2', session: {}, token: 't', profile: prof,
+  });
+
+  const h = mk();
+  ok('x-ot-trace-id 是 32 hex', /^[0-9a-f]{32}$/.test(h['x-ot-trace-id']), h['x-ot-trace-id']);
+  ok('x-ot-span-id 是 16 hex', /^[0-9a-f]{16}$/.test(h['x-ot-span-id']), h['x-ot-span-id']);
+  ok('x-snap-traceid 是 <32hex>_<16hex>', /^[0-9a-f]{32}_[0-9a-f]{16}$/.test(h['x-snap-traceid']), h['x-snap-traceid']);
+  ok('user-msg-id 是 msg_ 前缀', /^msg_[0-9a-f]{13}[0-9A-Za-z]{17}$/.test(h['user-msg-id']), h['user-msg-id']);
+  ok('created-time 是 ISO 秒精度', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(h['created-time']), h['created-time']);
+  ok('created-time 不是毫秒戳', !/^\d{13}$/.test(h['created-time']), h['created-time']);
+  ok('user-msg-id 不是 UUID', !/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(h['user-msg-id']), h['user-msg-id']);
+
+  // 每请求都要换，不能复用
+  const h2 = mk();
+  ok('trace-id 每请求不同', h['x-ot-trace-id'] !== h2['x-ot-trace-id']);
+  ok('span-id 每请求不同', h['x-ot-span-id'] !== h2['x-ot-span-id']);
+  ok('user-msg-id 每请求不同', h['user-msg-id'] !== h2['user-msg-id']);
+
+  // 会话 id 格式
+  resetSessions();
+  const s1 = sessionFor({ id: 'x1' }, 60000);
+  ok('session id 是 ses_ 前缀', s1.id.startsWith('ses_'), s1.id);
+  ok('session id 格式 ses_<13hex>e<17b62>', /^ses_[0-9a-f]{13}e[0-9A-Za-z]{17}$/.test(s1.id), s1.id);
+  ok('session id 不是 UUID', !/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(s1.id), s1.id);
+  const s1b = sessionFor({ id: 'x1' }, 60000);
+  ok('同账号会话稳定', s1b.id === s1.id);
+  const s2 = sessionFor({ id: 'x2' }, 60000);
+  ok('不同账号会话不同', s2.id !== s1.id);
+  resetSessions();
+
+  // model-id / model-name 分离
+  const hm = buildSignableHeaders({
+    cfg: {}, account: { id: 'a' }, model: 'openpangu-2.0-pro', modelName: 'OpenPangu-2.0-Pro',
+    session: {}, token: 't', profile: prof,
+  });
+  ok('model-id 用 model_id', hm['model-id'] === 'openpangu-2.0-pro', hm['model-id']);
+  ok('model-name 用显示名', hm['model-name'] === 'OpenPangu-2.0-Pro', hm['model-name']);
+  const hm2 = buildSignableHeaders({
+    cfg: {}, account: { id: 'a' }, model: 'GLM-5.2', session: {}, token: 't', profile: prof,
+  });
+  ok('不给 modelName 时回落成 model', hm2['model-name'] === 'GLM-5.2', hm2['model-name']);
+
+  // 实测的指纹四件套
+  ok('plugin-name=CLI', h['plugin-name'] === 'CLI', h['plugin-name']);
+  ok('ide-name=CLI', h['ide-name'] === 'CLI', h['ide-name']);
+  ok('x-ot-client-type=CLI', h['x-ot-client-type'] === 'CLI', h['x-ot-client-type']);
+  ok('client-ip=198.18.0.1', h['client-ip'] === '198.18.0.1', h['client-ip']);
+  ok('x-ot-function=agent-tui', h['x-ot-function'] === 'agent-tui', h['x-ot-function']);
+  ok('x-language=zh-cn', h['x-language'] === 'zh-cn');
+  ok('没有 maas_type（实测 CLI 不发）', !('maas_type' in h), JSON.stringify(Object.keys(h).filter((k) => k.includes('maas'))));
+}
+
+console.log('\n\x1b[1m[13] 模型显示名解析\x1b[0m');
+{
+  const acc = {
+    info: {
+      models: [
+        { id: 'GLM-5.2', name: 'GLM-5.2', alias: 'GLM-5.2' },
+        { id: 'openpangu-2.0-pro', name: 'OpenPangu-2.0-Pro', alias: 'openpangu-2.0-pro' },
+        { id: 'glm-5.2-sft-harmony', name: 'GLM-5.2-ArkTS-SPARK', alias: 'glm-5.2-sft-harmony' },
+      ],
+    },
+  };
+  ok('按 id 查到显示名', modelDisplayName(acc, 'openpangu-2.0-pro') === 'OpenPangu-2.0-Pro');
+  ok('按 alias 查到显示名', modelDisplayName(acc, 'glm-5.2-sft-harmony') === 'GLM-5.2-ArkTS-SPARK');
+  ok('id 与 name 相同时照常返回', modelDisplayName(acc, 'GLM-5.2') === 'GLM-5.2');
+  ok('查不到返回 undefined', modelDisplayName(acc, 'nope') === undefined);
+  ok('info 是字符串也能查', modelDisplayName({ info: JSON.stringify(acc.info) }, 'openpangu-2.0-pro') === 'OpenPangu-2.0-Pro');
+  ok('info 坏 JSON 返回 undefined', modelDisplayName({ info: '{bad' }, 'x') === undefined);
+  ok('没有 info 返回 undefined', modelDisplayName({}, 'x') === undefined);
+  ok('空 model 返回 undefined', modelDisplayName(acc, '') === undefined);
 }
 
 console.log('');

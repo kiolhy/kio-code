@@ -227,9 +227,9 @@ try {
   /* ---------- 出站指纹（上游看到的应该是一个正常 CLI） ---------- */
   console.log('\n\x1b[1m[4b] 出站指纹\x1b[0m');
   ok('UA 不是网关自证', !/kio|gateway|mock-hub/i.test(String(up1?.headers['user-agent'] ?? '')), String(up1?.headers['user-agent'] ?? ''));
-  ok('带 CLI 插件头', up1?.headers['plugin-name'] === 'codearts-cli', String(up1?.headers['plugin-name'] ?? ''));
+  ok('带 CLI 插件头（实测值 CLI）', up1?.headers['plugin-name'] === 'CLI', String(up1?.headers['plugin-name'] ?? ''));
   ok('带 x-ot-client-type = CLI', up1?.headers['x-ot-client-type'] === 'CLI', String(up1?.headers['x-ot-client-type'] ?? ''));
-  ok('x-ot-session-id 是 UUID', /^[0-9a-f-]{36}$/.test(String(up1?.headers['x-ot-session-id'] ?? '')), String(up1?.headers['x-ot-session-id'] ?? ''));
+  ok('x-ot-session-id 是 ses_ 格式', /^ses_[0-9a-f]{13}e[0-9A-Za-z]{17}$/.test(String(up1?.headers['x-ot-session-id'] ?? '')), String(up1?.headers['x-ot-session-id'] ?? ''));
   ok('x-ot-trace-id 是 32 hex', /^[0-9a-f]{32}$/.test(String(up1?.headers['x-ot-trace-id'] ?? '')), String(up1?.headers['x-ot-trace-id'] ?? ''));
   ok('没有 x-kio / mock 痕迹头', !Object.keys(up1?.headers ?? {}).some((k) => /^(x-kio|x-mock)/.test(k)));
   ok('SignedHeaders 含 CLI 会话头', /x-ot-session-id/.test(String(up1?.headers?.authorization ?? '')));

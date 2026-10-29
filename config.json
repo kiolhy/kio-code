@@ -148,20 +148,22 @@
   "stealth": {
     "profile": {
       "userAgent": "Bun/1.3.14",
-      "pluginName": "codearts-cli",
+      "pluginName": "CLI",
       "pluginVersion": "26.10.9",
-      "ideName": "codearts",
+      "ideName": "CLI",
       "ideVersion": "26.10.9",
       "kernelVersion": "26.10.9",
+      "clientType": "CLI",
+      "otClientType": "CLI",
       "otClientVersion": "26.10.9",
       "otFunction": "agent-tui",
-      "clientType": "DevMate",
       "agentType": "CodeAgent",
       "referer": "CodeBase",
       "appId": "CodeAgent3.0",
-      "maasType": "benefit",
+      "maasType": "",
+      "isConfidential": "false",
       "language": "zh-cn",
-      "clientIp": "auto",
+      "clientIp": "198.18.0.1",
       "currentUser": "",
       "department": ""
     },
@@ -187,10 +189,20 @@
     },
     "retry": {
       "maxAttempts": 3,
-      "rotateOnStatus": [401, 403, 429, 500, 502, 503, 504]
+      "rotateOnStatus": [
+        401,
+        403,
+        429,
+        500,
+        502,
+        503,
+        504
+      ]
     },
     "tls": {
-      "alpn": ["http/1.1"],
+      "alpn": [
+        "http/1.1"
+      ],
       "curves": "X25519:P-256:P-384"
     }
   },
