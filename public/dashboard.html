@@ -101,6 +101,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
   <nav id="nav">
     <button data-tab="gateway" class="on">网关与账号</button>
     <button data-tab="usage">数据看板</button>
+    <button data-tab="requests">请求日志</button>
     <button data-tab="models">模型</button>
     <button data-tab="proxies">代理</button>
     <button data-tab="schedule">调度</button>
@@ -205,6 +206,74 @@ dialog h4{margin:0 0 14px;font-size:14px}
       <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存</th><th class="num">积分</th></tr></thead>
       <tbody id="usageRecent"><tr><td colspan="10" class="empty">暂无数据</td></tr></tbody>
     </table></div>
+  </section>
+
+  <!-- ============ 请求日志 ============ -->
+  <section class="page" id="page-requests">
+    <div class="row" style="margin-bottom:16px">
+      <h2 style="margin:0">请求日志</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="reqRangeSeg">
+        <button data-range="today" class="on">今日</button>
+        <button data-range="week">本周</button>
+        <button data-range="month">本月</button>
+        <button data-range="all">全部</button>
+      </div>
+      <button onclick="loadRequests()">刷新</button>
+    </div>
+
+    <div class="grid g4" id="reqKpi" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))"></div>
+
+    <div class="card">
+      <div class="row">
+        <div class="field" style="margin:0;min-width:150px"><label>模型</label>
+          <select id="reqModel" onchange="applyReqFilter()"><option value="">全部</option></select>
+        </div>
+        <div class="field" style="margin:0;min-width:150px"><label>账号</label>
+          <select id="reqAccount" onchange="applyReqFilter()"><option value="">全部</option></select>
+        </div>
+        <div class="field" style="margin:0;min-width:150px"><label>Key</label>
+          <select id="reqKey" onchange="applyReqFilter()"><option value="">全部</option></select>
+        </div>
+        <div class="field" style="margin:0;min-width:110px"><label>状态</label>
+          <select id="reqStatus" onchange="applyReqFilter()">
+            <option value="">全部</option><option value="ok">成功</option><option value="error">失败</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0;min-width:150px"><label>每页</label>
+          <select id="reqSize" onchange="applyReqFilter()">
+            <option>20</option><option selected>50</option><option>100</option><option>200</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0;flex:1;min-width:180px"><label>搜索</label>
+          <input id="reqQ" placeholder="模型 / 账号 / Key / 路由" onkeydown="if(event.key==='Enter')applyReqFilter()">
+        </div>
+        <button class="sm" onclick="applyReqFilter()">筛选</button>
+        <button class="sm" onclick="resetReqFilter()">重置</button>
+      </div>
+    </div>
+
+    <div class="card" style="overflow-x:auto"><table>
+      <thead><tr>
+        <th style="cursor:pointer" onclick="reqSortBy('ts')">时间 ⇅</th><th>模型</th><th>账号</th><th>Key</th>
+        <th class="num">状态</th>
+        <th class="num" style="cursor:pointer" onclick="reqSortBy('durMs')">耗时 ⇅</th>
+        <th class="num" style="cursor:pointer" onclick="reqSortBy('totalTokens')">输入 ⇅</th>
+        <th class="num">输出</th>
+        <th class="num">缓存命中</th><th class="num" style="cursor:pointer" onclick="reqSortBy('cachePct')">缓存比例 ⇅</th>
+        <th class="num" style="cursor:pointer" onclick="reqSortBy('credit')">消耗积分 ⇅</th><th class="num">省下</th>
+      </tr></thead>
+      <tbody id="reqBody"><tr><td colspan="12" class="empty">加载中…</td></tr></tbody>
+    </table></div>
+
+    <div class="row" style="justify-content:space-between">
+      <div class="muted" id="reqMeta">—</div>
+      <div class="row">
+        <button class="sm" onclick="reqPage(-1)">上一页</button>
+        <span class="mono" id="reqPageInfo">1 / 1</span>
+        <button class="sm" onclick="reqPage(1)">下一页</button>
+      </div>
+    </div>
   </section>
 
   <!-- ============ 模型与价格 ============ -->
@@ -564,6 +633,7 @@ function showTab(tab) {
   document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   document.querySelectorAll('.page').forEach((p) => p.classList.toggle('on', p.id === 'page-' + tab));
   if (tab === 'usage') loadUsage();
+  if (tab === 'requests') loadRequests();
   if (tab === 'models') loadModels();
   if (tab === 'proxies') loadProxies();
   if (tab === 'schedule') loadSchedule();
@@ -1272,6 +1342,120 @@ document.querySelectorAll('#rangeSeg button').forEach((b) => {
     loadUsage();
   });
 });
+
+/* ---------------- 请求日志 ---------------- */
+const reqState = { range: 'today', page: 1, sort: 'ts', order: 'desc' };
+
+document.querySelectorAll('#reqRangeSeg button').forEach((b) => {
+  b.addEventListener('click', () => {
+    reqState.range = b.dataset.range;
+    reqState.page = 1;
+    document.querySelectorAll('#reqRangeSeg button').forEach((x) => x.classList.toggle('on', x === b));
+    loadRequests();
+  });
+});
+
+function reqFilterQS() {
+  const p = new URLSearchParams({
+    range: reqState.range,
+    page: String(reqState.page),
+    size: $('reqSize').value || '50',
+    sort: reqState.sort,
+    order: reqState.order,
+  });
+  const add = (k, id) => { const v = $(id)?.value; if (v) p.set(k, v); };
+  add('model', 'reqModel');
+  add('account', 'reqAccount');
+  add('key', 'reqKey');
+  add('status', 'reqStatus');
+  add('q', 'reqQ');
+  return p.toString();
+}
+
+function applyReqFilter() { reqState.page = 1; loadRequests(); }
+
+function resetReqFilter() {
+  ['reqModel', 'reqAccount', 'reqKey', 'reqStatus', 'reqQ'].forEach((id) => { if ($(id)) $(id).value = ''; });
+  $('reqSize').value = '50';
+  reqState.page = 1;
+  loadRequests();
+}
+
+function reqPage(delta) {
+  const next = reqState.page + delta;
+  if (next < 1) return;
+  reqState.page = next;
+  loadRequests();
+}
+
+function reqSortBy(field) {
+  if (reqState.sort === field) reqState.order = reqState.order === 'desc' ? 'asc' : 'desc';
+  else { reqState.sort = field; reqState.order = 'desc'; }
+  reqState.page = 1;
+  loadRequests();
+}
+
+async function loadRequests() {
+  try {
+    const j = await api('/requests?' + reqFilterQS());
+    const s = j.summary ?? {};
+
+    $('reqKpi').innerHTML = [
+      ['请求数', fmt(s.requests), s.errors ? s.errors + ' 个失败' : '全部成功'],
+      ['消耗积分', fmtCredit(s.credit), s.creditUnknown ? `${s.creditUnknown} 条无价格` : '按模型真实价格'],
+      ['输入 Token', fmtTok(s.promptTokens), '合计 ' + fmtTok(s.totalTokens)],
+      ['缓存命中', s.cachePct == null ? '—' : s.cachePct + '%', `${fmtTok(s.cachedTokens)} / ${fmtTok(s.promptTokens)}`],
+      ['缓存省下', fmtCredit(s.creditSaved), '相比全部按原价'],
+      ['输出 Token', fmtTok(s.completionTokens), '平均 ' + (s.avgDurMs ?? 0) + ' ms'],
+      ['每千 Token', s.creditPerKTok == null ? '—' : s.creditPerKTok, '平均积分成本'],
+    ].map(([l, v, sub]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join('');
+
+    // 筛选项：只在第一次或候选变化时重建，避免把用户选中的值冲掉
+    const fill = (id, list, cur) => {
+      const el = $(id);
+      if (!el) return;
+      const sig = list.join('\u0001');
+      if (el.dataset.sig !== sig) {
+        el.dataset.sig = sig;
+        el.innerHTML = '<option value="">全部</option>' + list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+      }
+      el.value = cur ?? '';
+    };
+    fill('reqModel', j.facets?.models ?? [], $('reqModel').value);
+    fill('reqAccount', j.facets?.accounts ?? [], $('reqAccount').value);
+    fill('reqKey', j.facets?.keys ?? [], $('reqKey').value);
+
+    const pct = (v) => (v == null ? '<span class="muted">—</span>' : v + '%');
+    const rows = j.rows ?? [];
+    $('reqBody').innerHTML = rows.length
+      ? rows.map((r) => {
+          const est = r.estimated ? ' <span class="pill warn" title="上游没返回 usage，token 数为本地估算">估算</span>' : '';
+          const stream = r.stream ? ' <span class="pill off">流</span>' : '';
+          const ok = r.status >= 200 && r.status < 400;
+          const credit = r.credit == null
+            ? '<span class="muted" title="该模型没有价格数据">—</span>'
+            : fmtCredit(r.credit);
+          return `<tr>
+            <td class="muted mono">${new Date(r.ts).toLocaleString('zh-CN')}</td>
+            <td class="mono">${esc(r.model)}${est}${stream}</td>
+            <td class="mono muted">${esc(r.accountName || '—')}</td>
+            <td class="mono muted">${esc(r.keyName || '—')}</td>
+            <td class="num">${ok ? `<span class="pill ok">${r.status}</span>` : `<span class="pill err">${r.status}</span>`}</td>
+            <td class="num">${r.durMs} ms</td>
+            <td class="num">${fmtTok(r.promptTokens)}</td>
+            <td class="num">${fmtTok(r.completionTokens)}</td>
+            <td class="num">${r.cachedTokens ? fmtTok(r.cachedTokens) : '<span class="muted">0</span>'}</td>
+            <td class="num">${pct(r.cachePct)}</td>
+            <td class="num"><b>${credit}</b></td>
+            <td class="num muted">${r.creditSaved ? fmtCredit(r.creditSaved) : '—'}</td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="12" class="empty">没有匹配的请求</td></tr>';
+
+    $('reqMeta').textContent = `共 ${fmt(j.total)} 条，第 ${j.page} / ${j.pages} 页，每页 ${j.size} 条`;
+    $('reqPageInfo').textContent = `${j.page} / ${j.pages}`;
+  } catch (e) { toast(e.message, true); }
+}
 
 async function loadUsage() {
   try {

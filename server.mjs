@@ -694,6 +694,28 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       });
     }
 
+    /* ---- 请求日志：分页 + 筛选，含每条消耗金额与缓存百分比 ---- */
+    if (p === '/requests') {
+      const qs = url.searchParams;
+      return void sendJson(res, 200, {
+        ok: true,
+        ...panel.requestLog({
+          range: qs.get('range') ?? 'today',
+          from: qs.get('from') ?? undefined,
+          to: qs.get('to') ?? undefined,
+          model: qs.get('model') ?? undefined,
+          account: qs.get('account') ?? undefined,
+          key: qs.get('key') ?? undefined,
+          status: qs.get('status') ?? undefined,
+          q: qs.get('q') ?? undefined,
+          page: Number(qs.get('page') ?? 1),
+          size: Number(qs.get('size') ?? 50),
+          sort: qs.get('sort') ?? 'ts',
+          order: qs.get('order') ?? 'desc',
+        }),
+      });
+    }
+
     /* ---- 设置 ---- */
     if (p === '/settings' && method === 'GET') {
       return void sendJson(res, 200, {
