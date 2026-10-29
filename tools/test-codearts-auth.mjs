@@ -218,12 +218,21 @@ console.log('\n\x1b[1m[8] 错误路径\x1b[0m');
     catch (e) { ok('无待授权请求抛错', e.code === 'no_pending', e.code); }
   })();
   {
+    // 同一时间只有一个待授权会话：回调里的 ticket_id 对不上时按当前会话继续
     const a2 = createCodeartsAuth({ cfg: makeCfg(), panel: makePanel() });
-    const s = a2.start({ callbackPort: 8787 });
-    await (async () => {
-      try { await a2.completeFromUrl({ url: `${base}/oauth/callback?code=x&ticket_id=deadbeef` }); ok('ticket 不匹配抛错', false); }
-      catch (e) { ok('ticket 不匹配抛错', e.code === 'ticket_mismatch', e.code); }
-    })();
+    a2.start({ callbackPort: 8787 });
+    const r = await a2.completeFromUrl({ url: `${base}/oauth/callback?code=x&ticket_id=deadbeef` });
+    ok('ticket_id 对不上时按当前会话继续', r.done === true, String(r.done));
+  }
+  {
+    // 码道回调里的 state 是它自己的 96 位随机串，不能当 ticket_id（曾导致 ticket_mismatch）
+    const panel = makePanel();
+    const a3 = createCodeartsAuth({ cfg: makeCfg(), panel });
+    a3.start({ callbackPort: 8787 });
+    const stateLike = '4df4a2775d042af92ebc68430ebaf426534143600d9cb8a8684739feb358042e49693d22';
+    const r = await a3.completeFromUrl({ url: `${base}/oauth/callback?code=x&state=${stateLike}` });
+    ok('回调里的 state 不当 ticket_id', r.done === true, String(r.done));
+    ok('state 场景下也正常入库', panel.added.length === 1 && panel.added[0].accessKeyId === 'HSTA_TEST');
   }
 }
 

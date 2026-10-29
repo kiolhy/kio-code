@@ -179,6 +179,12 @@ POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
   `http://127.0.0.1:8787/oauth/callback?code=…` 整条复制，粘进面板「完成授权」输入框，
   由服务器端完成 token 交换（交换本身不需要浏览器）。
 
+面板会同时给出**可复制的授权链接**（只读输入框 + 「复制授权链接」按钮），可以复制到任意浏览器打开。
+
+> 回调里的 `state` 是码道自己的随机串（96 位 hex），**不是**我们的 `ticket_id`（32 位 hex）。
+> 早期版本误把 `state` 当 `ticket_id` 校验，会报 `ticket_mismatch`；现在只认显式 `ticket_id`，
+> 且同一时间只有一个待授权会话，标识对不上时按当前会话继续。
+
 配置：`oauth.mode = "codearts"`，端点可用 `oauth.codearts.*` 覆盖（区域/企业版不同时改这里）。
 
 ## 导入原版 CLI 的 auth.json（零配置）
@@ -222,7 +228,7 @@ POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
 
 ```bash
 npm run test:oauth      # 56 项：链接生成 / code→STS→入库 / 轮询 / 错误路径 / DPoP / 设备码 / auth.json 导入
-npm run test:codearts   # 55 项：真实授权链接 / PKCE / DPoP 请求形状 / code→token / secret→ticket / 续期 / 批量续期 / 错误路径
+npm run test:codearts   # 57 项：真实授权链接 / PKCE / DPoP 请求形状 / code→token / secret→ticket / 续期 / 批量续期 / 回调容错 / 错误路径
 ```
 
 `tools/test-oauth.mjs` / `tools/test-codearts-auth.mjs` 用本地假服务器跑全程（校验请求形状与签名），不碰真实网络。

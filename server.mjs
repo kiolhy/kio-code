@@ -1042,7 +1042,7 @@ const requestHandler = async (req, res) => {
       if (eff.mode === 'codearts' && (code || url.searchParams.get('secret'))) {
         r = await codeartsAuth.completeFromUrl({
           url: url.toString(),
-          ticketId: url.searchParams.get('ticket_id') ?? state,
+          ticketId: url.searchParams.get('ticket_id'),
           callbackPort: cfg.port,
         });
       } else {

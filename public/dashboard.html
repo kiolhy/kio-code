@@ -512,6 +512,11 @@ async function oauthAdd() {
           <span class="spacer"></span>
           <a href="${esc(j.authorizeUrl)}" target="_blank" rel="noopener">重新打开链接</a>
         </div>
+        <div class="row" style="margin-top:8px;gap:8px">
+          <input id="oauthLink" readonly value="${esc(j.authorizeUrl)}" onclick="this.select()" style="flex:1">
+          <button onclick="copyOauthLink()">复制授权链接</button>
+        </div>
+        <div class="hint" style="margin-top:4px">链接可以复制到任意浏览器打开。授权后浏览器会跳到 <span class="mono">127.0.0.1</span>，把那条地址复制回下面的输入框即可。</div>
         <div class="hint" style="margin-top:6px" id="oauthPoll">等待授权…（ticket ${esc(String(j.ticketId || '').slice(0, 8))}）</div>
         <div class="hint" style="margin-top:10px">
           如果授权后浏览器停在 <span class="mono">127.0.0.1</span> 打不开的页面（网关在远程），
@@ -546,8 +551,16 @@ async function oauthAdd() {
   }
 }
 
-async function completeOAuth() {
-  const el = $('oauthCbUrl');
+function copyOauthLink() {
+  const el = $('oauthLink');
+  if (!el) return;
+  el.select();
+  const done = () => toast('已复制授权链接');
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(el.value).then(done).catch(() => { document.execCommand('copy'); done(); });
+  else { document.execCommand('copy'); done(); }
+}
+
+async function completeOAuth() {  const el = $('oauthCbUrl');
   const url = (el && el.value || '').trim();
   if (!url) return toast('先粘贴回调地址', true);
   try {
