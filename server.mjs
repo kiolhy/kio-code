@@ -1217,14 +1217,20 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
     const gw = cfg.gateway ?? {};
     // 优先用账号池探测到的真实模型；没探测过才退回配置里的静态清单
     const catalog = buildCatalog(panel.state?.accounts ?? []);
-    const fromCatalog = catalog.models.map((m) => m.id).filter(Boolean);
-    // 注意：gw.models 可能是空数组，?? 不会回退，必须判长度
+    // buildCatalog 已按「id/name 交叉相等」把同一模型合并成一条，
+    // 所以这里直接用 catalog.models 的顺序，不要再按 id 二次查表
+    // （那会让合并后的条目丢失，只留下配置里写死的那些）。
+    const fromCatalog = catalog.models.filter((m) => m?.id);
     const configured = Array.isArray(gw.models) && gw.models.length ? gw.models : null;
-    const list = configured ?? (fromCatalog.length ? fromCatalog : (cfg.models ?? []).map((m) => m.model_name).filter(Boolean));
+    const data = configured
+      ? configured.map((id) => catalog.models.find((x) => x.id === id) ?? { id }).filter((m) => m?.id)
+      : (fromCatalog.length
+        ? fromCatalog
+        : (cfg.models ?? []).map((m) => ({ id: m.model_name })).filter((m) => m?.id));
     return void sendJson(res, 200, {
       object: 'list',
-      data: list.map((id) => {
-        const m = catalog.models.find((x) => x.id === id);
+      data: data.map((m) => {
+        const id = m.id;
         const price = m?.price ?? null;
         return {
           id,
