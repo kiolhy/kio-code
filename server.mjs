@@ -565,6 +565,10 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
     if (seg[0] === 'schedule' && seg[1] && method === 'POST') {
       const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
       if (body.action === 'clear') {
+        const acc = panel.findAccount(seg[1]);
+        // 两个冷却层都要清：scheduler（分级退避）和 governor（节流固定冷却），
+        // 只清一个的话另一个还会把账号挡在外面
+        if (acc) governor.reset(acc);
         const okClear = panel.clearAccountCooldown(seg[1], body.model);
         return void sendJson(res, okClear ? 200 : 404, { ok: okClear });
       }
@@ -951,6 +955,9 @@ async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
       sessionKey,
       exclude: tried,
     });
+    if (process.env.MOCK_HUB_DEBUG_PICK) {
+      log('info', `[pick] attempt=${attempt} model=${model} ref=${ctx?.accountRef ?? '-'} account=${account?.id ?? 'NULL'} tried=${tried.join(',') || '-'}`);
+    }
     const creds = account
       ? pickCredentials({ ctx: { ...ctx, authAccount: account }, panel, cfg, exclude: tried })
       : pickCredentials({ ctx, panel, cfg, exclude: tried });
@@ -1176,9 +1183,10 @@ function fallbackMeta({ path, method, url, panel, cfg }) {
 }
 
 async function handleGateway(req, res, url, method, headers, reqId, started) {
-  // 归一化：/api/v2/chat/completions → /v1/chat/completions（码道 CLI 的原生路径）
+  // 归一化：/api/v2/chat/completions、/api/v2/v1/chat/completions、/v1/chat/completions
+  // 都指向同一个处理分支（码道 CLI 用 /api/v2/chat/completions，OpenAI SDK 用 /v1/chat/completions）
   const rawPath = url.pathname.replace(/\/+$/, '') || '/v1';
-  const p = /^\/(?:api\/v2\/)?chat\/completions$/.test(rawPath)
+  const p = /^\/(?:api\/v2\/)?(?:v1\/)?chat\/completions$/.test(rawPath)
     ? '/v1/chat/completions'
     : rawPath;
 
@@ -1295,6 +1303,17 @@ if (p === '/v1/chat/completions' && method === 'POST') {
     }
 
     const r = await callUpstreamWithRotation({ body, ctx, stream: false });
+    // 上游业务错误（200 + error_code）已在 forwardChatOnce 里翻成真实状态码
+    if (r.bizError) {
+      finishUsage({ usage: null, account: r.account, model: body?.model, status: r.status, stream: false });
+      return void sendJson(res, r.status, {
+        error: {
+          code: `upstream_${r.bizError.code}`,
+          message: r.bizError.message || '上游拒绝了这次请求',
+          type: 'upstream_error',
+        },
+      });
+    }
     let json;
     try {
       json = JSON.parse(r.body.toString('utf8'));

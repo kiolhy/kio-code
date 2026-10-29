@@ -6,6 +6,8 @@ import zlib from 'node:zlib';
 
 import {
   resolveProfile,
+  maasTypeFor,
+  isConcurrencyLimit,
   buildSignableHeaders,
   buildTransportHeaders,
   sessionFor,
@@ -15,7 +17,7 @@ import {
 } from '../lib/stealth.mjs';
 import { createGovernor, parseRetryAfter } from '../lib/pacing.mjs';
 import { createTransport, buildTlsOptions } from '../lib/transport.mjs';
-import { buildUpstreamHeaders } from '../lib/gateway.mjs';
+import { buildUpstreamHeaders, detectUpstreamBizError } from '../lib/gateway.mjs';
 import { verifyRequest } from '../lib/sign.mjs';
 
 let pass = 0;
@@ -261,6 +263,72 @@ console.log('\n\x1b[1m[5] 传输层：头顺序 / gzip / CONNECT 代理\x1b[0m')
     upstream.close();
     proxy.close();
   }
+}
+
+console.log('\n\x1b[1m[10] maas_type 按套餐状态选择\x1b[0m');
+{
+  // 实测 2026-10-29：不发 → 200；benefit → 200（无套餐时 4004）；
+  // default → 503；pay → 400。所以只有真有套餐才发 benefit。
+  ok('无套餐 → 空串（不发）', maasTypeFor({ info: { benefit: { enabled: false } } }) === '');
+  ok('有套餐 → benefit', maasTypeFor({ info: { benefit: { enabled: true } } }) === 'benefit');
+  ok('info 是字符串也能解析', maasTypeFor({ info: JSON.stringify({ benefit: { enabled: false } }) }) === '');
+  ok('没探测过 → benefit（保持原默认）', maasTypeFor({}) === 'benefit');
+  ok('info 坏 JSON → benefit', maasTypeFor({ info: '{bad' }) === 'benefit');
+  ok('benefit 字段缺失 → benefit', maasTypeFor({ info: {} }) === 'benefit');
+
+  // resolveProfile 必须让空串生效（不能用 if (opts.maasType) 判断）
+  const p1 = resolveProfile({ stealth: { profile: {} } }, { maasType: '' });
+  ok('空串覆盖默认值', p1.maasType === '', JSON.stringify(p1.maasType));
+  const p2 = resolveProfile({ stealth: { profile: {} } }, { maasType: 'benefit' });
+  ok('benefit 正常覆盖', p2.maasType === 'benefit');
+  const p3 = resolveProfile({ stealth: { profile: {} } });
+  ok('不传时保留默认', p3.maasType === 'benefit', p3.maasType);
+
+  // 空 maas_type 不进签名头
+  const h = buildSignableHeaders({
+    cfg: {},
+    account: { id: 'a', userName: 'u' },
+    model: 'GLM-5.2',
+    session: {},
+    token: 't',
+    profile: p1,
+  });
+  ok('空 maas_type 不出现在头里', !('maas_type' in h), JSON.stringify(Object.keys(h).filter((k) => k.includes('maas'))));
+
+  // 上游并发会话上限
+  ok('识别 TM.00001041', isConcurrencyLimit('{"error_code":"TM.00001041","error_msg":"并发会话数已达上限(3个)"}'));
+  ok('识别中文文案', isConcurrencyLimit('并发会话数已达上限(3个)，请关闭部分会话后重试。'));
+  ok('普通 429 不算并发上限', !isConcurrencyLimit('rate limit exceeded'));
+}
+
+console.log('\n\x1b[1m[11] 上游业务错误识别（HTTP 200 但失败）\x1b[0m');
+{
+  const mk = (obj) => Buffer.from(JSON.stringify(obj));
+
+  const e1 = detectUpstreamBizError(200, mk({ error_code: '4004', error_msg: 'benefit not found', result: null }));
+  ok('4004 被识别', e1?.code === '4004', e1?.code);
+  ok('4004 翻成 402', e1?.status === 402, String(e1?.status));
+
+  const e2 = detectUpstreamBizError(200, mk({ error_code: '4000', error_msg: 'invalid channel, group not found' }));
+  ok('4000 翻成 400', e2?.status === 400, String(e2?.status));
+
+  const e3 = detectUpstreamBizError(200, mk({ error_code: '4003', error_msg: 'user disabled' }));
+  ok('4003 翻成 403', e3?.status === 403);
+
+  const e4 = detectUpstreamBizError(200, mk({ error_code: '4006', error_msg: 'daily limit' }));
+  ok('4006 翻成 429', e4?.status === 429);
+
+  const e5 = detectUpstreamBizError(200, mk({ error_code: '9999', error_msg: 'unknown' }));
+  ok('未知码翻成 502', e5?.status === 502);
+
+  // 正常响应不该被误判
+  ok('有 choices 不算错', detectUpstreamBizError(200, mk({ choices: [{ message: { content: 'hi' } }] })) === null);
+  ok('error_code=0 不算错', detectUpstreamBizError(200, mk({ error_code: '0' })) === null);
+  ok('error_code=0000 不算错', detectUpstreamBizError(200, mk({ error_code: '0000' })) === null);
+  ok('无 error_code 不算错', detectUpstreamBizError(200, mk({ id: 'x', object: 'chat.completion' })) === null);
+  ok('非 JSON 不算错', detectUpstreamBizError(200, Buffer.from('data: hello')) === null);
+  ok('非 200 不处理', detectUpstreamBizError(500, mk({ error_code: '4004' })) === null);
+  ok('空 body 不算错', detectUpstreamBizError(200, Buffer.alloc(0)) === null);
 }
 
 console.log('');

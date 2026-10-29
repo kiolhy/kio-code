@@ -1,0 +1,51 @@
+fix: 无 benefit 套餐的账号发 maas_type 导致上游 503
+
+用新 Key 实测发现三个真问题：
+
+1) maas_type 取值错，上游直接 503
+
+实测（2026-10-29，snap-access）：
+  不发 maas_type  -> 200 正常
+  benefit         -> 200（没有套餐的账号回 4004 benefit not found）
+  default         -> 200 + data:{"text":"[DONE]","error_code":"TM.00009999",
+                     "error_msg":"503 Service Unavailable"}
+  pay             -> 400 未开通
+
+上一版把「无套餐」映射成 default，等于必然 503。正确做法是整个头不发
+—— maasTypeFor 现在返回空串表示不发，而不是 'default'。
+
+2) resolveProfile 用 if (opts.maasType) 判断，空串被吞掉
+
+空串是有效值（表示不发这个头），falsy 判断让它永远覆盖不了默认的
+'benefit'，等于修复 1 白做。改成 !== undefined && !== null。
+
+3) 上游业务错误是 HTTP 200，网关当成成功透传
+
+码道的业务错误长这样：
+  {"error_code":"4004","error_msg":"benefit not found","result":null}
+HTTP 状态是 200。只看状态码会把这种响应原样返回给客户端，客户端拿到一个
+没有 choices 的「成功」响应，排查毫无线索。
+
+新增 detectUpstreamBizError()，把业务码翻成真实 HTTP 语义：
+  4000/4001/4002 -> 400    4003 -> 403
+  4004 -> 402              4006 -> 429
+  4010 -> 401              5000 -> 500    其余 -> 502
+流式和非流式两条路径都接了。
+
+顺带修的：
+
+- /v1/chat/completions 之前 404：handleGateway 的归一化正则漏了 v1 前缀，
+  ROUTES 里有但 p 算出来还是 /v1/chat/completions，补上 (?:v1/)?。
+
+- 面板「清冷却」只清了 scheduler，没清 governor，另一层还把账号挡在外面。
+  现在两个都清，并且清冷却同时放开 tokenExpired（点「清冷却」的语义就是
+  「我现在就要用这个账号」）。
+
+- 识别上游并发会话上限 TM.00001041（上限 3，回 400 不是 429，
+  调度器的限流分类抓不到）。
+
+实测通过：GLM-5.2 / deepseek-v4.1-flash / kimi-k3 / openpangu-2.0-flash
+非流式与流式都正常，usage 真实（含 reasoning_tokens）。
+
+测试：900 项 0 失败（test-stealth 从 53 补到 79，覆盖 maas_type 选择、
+resolveProfile 空串、业务错误码映射）。版本 1.9.1
