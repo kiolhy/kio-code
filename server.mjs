@@ -25,6 +25,7 @@ import { resolveProfile, findIdentityLeaks } from './lib/stealth.mjs';
 import { createUpdater, UpdateError } from './lib/updater.mjs';
 import { localRevision, shortSha } from './lib/version.mjs';
 import { createOAuth, OAuthError } from './lib/oauth.mjs';
+import { createCodeartsAuth, CodeartsAuthError } from './lib/codearts-auth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -77,6 +78,8 @@ const updater = createUpdater({ cfg, rootDir: __dirname, dataDir: DATA_DIR, log 
 const BUILD = localRevision(__dirname);
 // 账号池 OAuth 授权添加（OAuth2 授权码 → STS 临时 AK/SK → 自动入库），见 lib/oauth.mjs
 const oauth = createOAuth({ cfg, panel, log });
+// 码道真实登录协议（反编译还原：授权码+PKCE+DPoP），见 lib/codearts-auth.mjs
+const codeartsAuth = createCodeartsAuth({ cfg, panel, log });
 
 function saveConfig() {
   try {
@@ -556,7 +559,21 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
     /* ---- 账号池 OAuth 授权添加 ---- */
     if (p === '/oauth/start' && method === 'POST') {
       const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      if ((cfg.oauth?.mode ?? 'sts') === 'codearts') {
+        const r = codeartsAuth.start({ callbackPort: Number(body.callbackPort) || cfg.port, locale: body.locale });
+        return void sendJson(res, 200, { ok: true, mode: 'codearts', ...r });
+      }
       const r = await oauth.start({ scope: body.scope, region: body.region });
+      return void sendJson(res, 200, { ok: true, ...r });
+    }
+
+    if (p === '/oauth/complete' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const r = await codeartsAuth.completeFromUrl({
+        url: body.url,
+        ticketId: body.ticketId,
+        callbackPort: Number(body.callbackPort) || cfg.port,
+      });
       return void sendJson(res, 200, { ok: true, ...r });
     }
 
@@ -568,6 +585,9 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
 
     if (p === '/oauth/status' && method === 'GET') {
       const state = url.searchParams.get('state');
+      if ((cfg.oauth?.mode ?? 'sts') === 'codearts') {
+        return void sendJson(res, 200, { ok: true, ...codeartsAuth.status({ ticketId: state }) });
+      }
       return void sendJson(res, 200, { ok: true, ...oauth.status({ state }) });
     }
 
@@ -941,10 +961,19 @@ const requestHandler = async (req, res) => {
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
     try {
-      const r = await oauth.exchange({ code, state });
+      let r;
+      if ((cfg.oauth?.mode ?? 'sts') === 'codearts' && (code || url.searchParams.get('secret'))) {
+        r = await codeartsAuth.completeFromUrl({
+          url: url.toString(),
+          ticketId: url.searchParams.get('ticket_id') ?? state,
+          callbackPort: cfg.port,
+        });
+      } else {
+        r = await oauth.exchange({ code, state });
+      }
       return void sendText(res, 200, oauthCallbackHtml(true, r), 'text/html; charset=utf-8');
     } catch (e) {
-      const status = e instanceof OAuthError ? (e.status ?? 500) : 500;
+      const status = e instanceof OAuthError || e instanceof CodeartsAuthError ? (e.status ?? 500) : 500;
       return void sendText(res, status, oauthCallbackHtml(false, { error: String(e?.message ?? e) }), 'text/html; charset=utf-8');
     }
   }

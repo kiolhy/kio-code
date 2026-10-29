@@ -462,6 +462,29 @@ async function oauthAdd() {
   try {
     const j = await api('/oauth/start', { method: 'POST', body: '{}' });
     window.open(j.authorizeUrl, '_blank');
+
+    if (j.mode === 'codearts') {
+      box.style.display = 'block';
+      box.innerHTML = `<div class="card" style="padding:12px">
+        <div class="row">
+          <span>🔗 已打开码道授权页，登录并同意授权…</span>
+          <span class="spacer"></span>
+          <a href="${esc(j.authorizeUrl)}" target="_blank" rel="noopener">重新打开链接</a>
+        </div>
+        <div class="hint" style="margin-top:6px" id="oauthPoll">等待授权…（ticket ${esc(String(j.ticketId || '').slice(0, 8))}）</div>
+        <div class="hint" style="margin-top:10px">
+          如果授权后浏览器停在 <span class="mono">127.0.0.1</span> 打不开的页面（网关在远程），
+          把地址栏整条地址粘到下面：
+        </div>
+        <div class="row" style="margin-top:6px">
+          <input id="oauthCbUrl" placeholder="http://127.0.0.1:8787/oauth/callback?code=..." style="flex:1">
+          <button onclick="completeOAuth()">完成授权</button>
+        </div>
+      </div>`;
+      pollOAuth(j.ticketId, 0);
+      return;
+    }
+
     const codeLine = j.userCode ? `<div class="hint" style="margin-top:6px">登录码：<b class="mono">${esc(j.userCode)}</b>（已复制到剪贴板）</div>` : '';
     box.style.display = 'block';
     box.innerHTML = `<div class="card" style="padding:12px">
@@ -480,6 +503,19 @@ async function oauthAdd() {
     box.style.display = 'block';
     box.innerHTML = `<div class="hint" style="color:#f85149">${esc(e.message)}</div>`;
   }
+}
+
+async function completeOAuth() {
+  const el = $('oauthCbUrl');
+  const url = (el && el.value || '').trim();
+  if (!url) return toast('先粘贴回调地址', true);
+  try {
+    const j = await api('/oauth/complete', { method: 'POST', body: JSON.stringify({ url }) });
+    toast('已添加账号 ' + (j.name || ''));
+    const p = $('oauthPoll');
+    if (p) p.textContent = '✅ 已添加账号 ' + (j.name || '');
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
 }
 
 async function pollOAuth(state, n) {

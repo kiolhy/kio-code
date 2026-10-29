@@ -190,6 +190,9 @@ console.log('\n\x1b[1m[6] DPoP 证明（原版 CLI 的 dpop_key_pair 机制）\x
   ok('claims htm/htu', d.claims.htm === 'POST' && d.claims.htu === 'https://x/t');
   ok('claims 带 iat/jti', typeof d.claims.iat === 'number' && !!d.claims.jti);
   ok('签名可验', verifyDpopProof(proof, kp.privateKey) === true);
+  // JWS 要求 ECDSA 是 P1363(r||s 64 字节)，DER 会被华为 STS 拒掉（实测 STS5.1804）
+  const rawSig = Buffer.from(proof.split('.')[2], 'base64url');
+  ok('签名是 P1363 原始 64 字节', rawSig.length === 64, `${rawSig.length} 字节`);
 
   const p2 = createDpopProof({ privateKey: kp.privateKey, publicJwk: kp.publicJwk, htu: 'https://x/t', htm: 'POST', nonce: 'n1', ath: accessTokenHash('tok') });
   const d2 = decodeDpopProof(p2);

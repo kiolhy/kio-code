@@ -481,8 +481,9 @@ data/
 ## 账号授权添加
 
 账号池面板三种方式：`+ 添加账号`（手动 AK/SK）、`🔗 授权添加`（链接授权 → STS 临时 AK/SK 入库，支持
-`sts`/`token`/`codearts-cli` 三模式，`codearts-cli` 模拟原版 CLI 的 DPoP+设备码登录）、`📥 导入 auth.json`
-（直接贴原版 CLI 登录产物，零配置）。上游要的是 SDK 签名、SK 是静态密钥，所以只能走 OAuth → STS 拿临时凭据。
+`sts`/`token`/`codearts`/`codearts-cli` 模式，其中 **`codearts` 是反编译还原的真实登录协议**：
+`codearts.huaweicloud.com/portal/authorize` + PKCE + DPoP → `sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens`）、
+`📥 导入 auth.json`（直接贴原版 CLI 登录产物）。上游要的是 SDK 签名、SK 是静态密钥，所以只能走 OAuth → STS 拿临时凭据。
 详见 [docs/oauth.md](docs/oauth.md)。
 
 ---
@@ -506,6 +507,7 @@ mock-hub/
 │   ├── pacing.mjs          节流：账号并发 / 间隔抖动 / 冷却
 │   ├── gh.mjs              GitHub 客户端：REST / tarball / 设备码登录
 │   ├── oauth.mjs           账号池授权添加：OAuth 授权码 / 设备码 / auth.json → STS 临时凭据
+│   ├── codearts-auth.mjs   码道真实登录协议（反编译还原：PKCE + DPoP + ticket）
 │   ├── dpop.mjs            DPoP（RFC 9449）：ES256 密钥对 + 证明 JWT
 │   ├── updater.mjs         在线更新：检查 / 应用 / 回滚
 │   ├── tar.mjs             最小 tar.gz 读写（更新包解包/打包）
@@ -528,6 +530,7 @@ mock-hub/
 │   ├── test-gateway.mjs    网关模式端到端（假上游断言签名与头）
 │   ├── test-update.mjs     在线更新 / 设备码授权 32 项验证
 │   ├── test-oauth.mjs      账号池授权添加 56 项验证（含 DPoP / 设备码 / auth.json）
+│   ├── test-codearts-auth.mjs  码道真实登录协议 37 项验证（PKCE/DPoP/ticket）
 │   ├── test-capture.mjs    遥测捕获 13 项验证（自签证书 / OTLP / 来源域名）
 │   ├── egress-proxy.mjs    出站代理：不用管理员权限替代 hosts，拦截+捕获
 │   ├── analyze-request.mjs 拆解一条请求：结构 / 工具清单 / 体积分布

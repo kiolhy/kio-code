@@ -211,8 +211,8 @@
     "checkCommits": 10
   },
   "oauth": {
-    "enabled": false,
-    "mode": "sts",
+    "enabled": true,
+    "mode": "codearts",
     "authorizeUrl": "https://oauth-login.cloud.huawei.com/oauth2/v2/authorize",
     "tokenUrl": "https://oauth-login.cloud.huawei.com/oauth2/v2/token",
     "clientId": "",
@@ -225,6 +225,15 @@
     "proxy": "",
     "deviceAuthorizationUrl": "",
     "cliAuthPageUrl": "https://codearts.huaweicloud.com/portal/settings/cli-auth",
+    "codearts": {
+      "authorizeBase": "https://codearts.huaweicloud.com/portal",
+      "tokenUrl": "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens",
+      "ticketBase": "https://snap-access.cn-north-4.myhuaweicloud.com/snap-manager",
+      "loginPage": "https://codearts.huaweicloud.com/portal/settings/cli-auth",
+      "clientId": "CodeArts_Tui",
+      "enterprise": "prod",
+      "locale": "zh-cn"
+    },
     "sts": {
       "endpoint": "https://sts.cn-north-4.myhuaweicloud.com/v1/{domainId}/agency/assume-role",
       "domainId": "",

@@ -76,30 +76,69 @@
 
 > 委托授权本质是「把 OAuth 身份映射到一套临时 AK/SK」。没有委托关系，登录链接只能拿到身份 token，变不出 AK/SK。
 
-## 模拟原版 CLI 登录（`mode: "codearts-cli"`）
+## 码道真实登录协议（`mode: "codearts"`，走真实网络）
 
-原版 CLI 登录实测（`docs/real-login.md`）会打印一个链接、用户浏览器授权后拿到 STS 三元组，落盘到
-`auth.json` 里带一个 `dpop_key_pair`——说明它用 **OAuth + DPoP（RFC 9449）+ 设备码**。
+从 `agentkernel.exe`（Bun 编译产物）反编译还原的 auth 模块，**不是模拟**，端点/参数全部是真实值：
 
-本模式复刻同一条链路，`lib/dpop.mjs` 生成 ES256（P-256）密钥对、每次请求带上 DPoP 证明 JWT：
+| 项 | 真实值 |
+|---|---|
+| 授权页 | `https://codearts.huaweicloud.com/portal/authorize` |
+| token | `https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens` |
+| ticket | `https://snap-access.cn-north-4.myhuaweicloud.com/snap-manager/v1/login/ticket` |
+| `client_id` | `CodeArts_Tui` |
+| 协议 | 授权码 + PKCE（`code_challenge_method=SHA-256`）+ DPoP（ES256，`typ=dpop+jwt`） |
+| 回调 | `http://127.0.0.1:<port>/oauth/callback`，带 `?code=…` 或 `?secret=…&redirect=…` |
+
+### 链路
 
 ```
-面板「授权添加」
-  → 生成 DPoP 密钥对
-  → POST deviceAuthorizationUrl（带 DPoP 头）拿 device_code / user_code / verification_uri
-  → 打开 verification_uri（或 cliAuthPageUrl），展示 user_code
-  → 轮询 tokenUrl（grant_type=device_code + DPoP 头），直到 success
-  → 从 token 响应解析 STS 三元组（支持 access_key_id/credential.access 多种形状）
-  → 入库（authType=sts，domainId/userId/refresh 一并落库）
+生成 verifier(128 hex) + challenge = base64url(sha256(verifier)) + ticket_id(32 hex)
+→ 打开 https://codearts.huaweicloud.com/portal/authorize
+     ?locale=zh-cn&client_id=CodeArts_Tui&port=<回调端口>
+     &code_challenge=<challenge>&code_challenge_method=SHA-256&ticket_id=<ticket_id>
+→ 浏览器授权后跳回 http://127.0.0.1:<port>/oauth/callback?code=…
+→ POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
+     Content-Type: application/x-www-form-urlencoded
+     DPoP: <ES256 证明 JWT，htm=POST, htu=该 URL>
+     client_id=CodeArts_Tui&code=…&code_verifier=…&grant_type=authorization_code
+     &redirect_uri=http://127.0.0.1:<port>/oauth/callback
+→ 响应 { credentials: { access_key_id, secret_access_key, security_token, expiration }, refresh_token }
+→ 入库（authType=sts），refresh + dpop_key_pair 记进 note，可用于续期
 ```
 
-配置：`mode: "codearts-cli"` + `deviceAuthorizationUrl` + `tokenUrl` + `clientId`。响应字段路径复用 `sts.*Path`
-（默认就能识别原版 CLI 的顶层 `access_key_id`/`secret_access_key`/`security_token` 形状）。
+另一条异步路径：回调带 `secret` 时，用 `ticket_id + secret` 去
+`GET {ticketBase}/v1/login/ticket?ticket_id=…&secret=…`（最多轮询 10 次，1 秒间隔）换
+`{ credential: { access, secret, securitytoken, expires_at } }`。
 
-> 端点名称这里用占位符：华为云 OAuth 设备端点需要从原版 CLI 反编译拿到确切 URL（本仓库之前提取的
-> `_codearts_re/` 已清理）。`codearts-cli` 模式把协议、DPoP、解析、入库全部做对了，只差把两个真实 URL 填进去。
+续期：`POST token`，`grant_type=refresh_token&refresh_token=…`，带 DPoP 头 + `x-agent-user-account`。
 
-## 导入原版 CLI 的 auth.json（零配置，最可靠）
+> **DPoP 签名格式（实测踩坑）**：JWS 要求 ECDSA 是 **P1363（r||s，64 字节）**，Node `crypto.sign` 默认给
+> DER，会被 STS 直接拒：`STS5.1804 invalid DPoP proof: 'decode DPoP failed with jwk: …'`。
+> `lib/dpop.mjs` 已显式用 `dsaEncoding: 'ieee-p1363'`。
+
+### 真实网络验证结果（已实测）
+
+```
+GET  https://codearts.huaweicloud.com/portal/authorize?...  → 200 text/html（真实授权页）
+POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
+     不带 DPoP → 400 {"error_code":"APIGW.0106","error_msg":"...Invalid header parameter: DPoP, required"}
+     带 DPoP  → 400 {"error_code":"STS5.1805","error_msg":"invalid authorization code"}
+```
+
+也就是说：DPoP 证明被接受、`client_id=CodeArts_Tui` 被接受、请求形状正确，只差一个真实授权码。
+
+### 远程部署怎么用
+
+授权页固定跳 `127.0.0.1:<port>`，所以：
+
+- **网关跑在本机**（`127.0.0.1:8787`）：回调直接打到网关，全自动。
+- **网关在远程服务器**：浏览器会跳到本机 `127.0.0.1:<port>` 打不开——把地址栏那条
+  `http://127.0.0.1:8787/oauth/callback?code=…` 整条复制，粘进面板「完成授权」输入框，
+  由服务器端完成 token 交换（交换本身不需要浏览器）。
+
+配置：`oauth.mode = "codearts"`，端点可用 `oauth.codearts.*` 覆盖（区域/企业版不同时改这里）。
+
+## 导入原版 CLI 的 auth.json（零配置）
 
 原版 CLI 登录一次后，凭据在 `%USERPROFILE%\.codeartsdoer\cli-data\auth.json`。面板「📥 导入 auth.json」直接贴这个文件：
 
@@ -114,8 +153,7 @@
 ```
 
 网关解析 `inferhub-provider.access`（字符串 JSON 或对象都认），提取 `access_key_id`/`secret_access_key`/
-`security_token`/`expires`/`accountId`，按 STS 账号入库。`refresh` 记进 `note` 备查。**这是唯一不需要任何华为云侧配置、
-开箱即用的方式**——你只需要在真机用原版 CLI 登录一次，把 auth.json 粘进来。
+`security_token`/`expires`/`accountId`，按 STS 账号入库。`refresh` 记进 `note` 备查。
 
 ## 端点
 
@@ -123,6 +161,7 @@
 |---|---|---|
 | POST | `/panel/api/oauth/start` | 需要面板登录态；生成登录链接 + state（或 deviceCode） |
 | POST | `/panel/api/oauth/poll` | 需要面板登录态；`codearts-cli` 设备码轮询 |
+| POST | `/panel/api/oauth/complete` | 需要面板登录态；粘贴回调地址完成 `codearts` 授权（远程部署用） |
 | GET | `/panel/api/oauth/status?state=…` | 需要面板登录态；轮询授权结果 |
 | GET | `/oauth/callback?code=…&state=…` | 无需登录态（华为云回调）；换凭据 + 入库 |
 | POST | `/panel/api/accounts/import-auth` | 需要面板登录态；粘贴 auth.json 导入账号 |
@@ -138,7 +177,8 @@
 ## 测试
 
 ```bash
-npm run test:oauth   # 56 项：链接生成 / code→STS→入库 / 轮询 / 错误路径 / token 模式 / DPoP / 设备码模式 / auth.json 导入
+npm run test:oauth      # 56 项：链接生成 / code→STS→入库 / 轮询 / 错误路径 / DPoP / 设备码 / auth.json 导入
+npm run test:codearts   # 37 项：真实授权链接 / PKCE / DPoP 请求形状 / code→token / secret→ticket / 刷新 / 错误路径
 ```
 
-`tools/test-oauth.mjs` 用本地假 OAuth + 假 STS + 假设备授权服务器跑全程，不碰真实网络。
+`tools/test-oauth.mjs` / `tools/test-codearts-auth.mjs` 用本地假服务器跑全程（校验请求形状与签名），不碰真实网络。

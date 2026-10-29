@@ -202,7 +202,12 @@ console.log('\n\x1b[1m[5] 在线更新与 GitHub 状态\x1b[0m');
   ok('设备码无 client_id 时明确报错', dev.status === 400 && dev.body?.error?.code === 'no_client_id', `${dev.status}/${dev.body?.error?.code}`);
 
   const ostart = await req('/panel/api/oauth/start', { method: 'POST', headers: H, body: '{}' });
-  ok('oauth 未开启时明确报错', ostart.status === 409 && ostart.body?.error?.code === 'oauth_disabled', `${ostart.status}/${ostart.body?.error?.code}`);
+  ok(
+    'oauth 授权入口可用（未开启 409 / 已开启 200+链接）',
+    (ostart.status === 409 && ostart.body?.error?.code === 'oauth_disabled') ||
+      (ostart.status === 200 && typeof ostart.body?.authorizeUrl === 'string'),
+    `${ostart.status}/${ostart.body?.error?.code ?? 'ok'}`
+  );
 
   const ostat = await req('/panel/api/oauth/status', { headers: H });
   ok('oauth 状态 200', ostat.status === 200 && typeof ostat.body?.enabled === 'boolean', `enabled=${ostat.body?.enabled}`);
