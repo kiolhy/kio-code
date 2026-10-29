@@ -90,6 +90,59 @@ console.log('\n\x1b[1m[4] 汇总\x1b[0m');
   ok('空数组', sumCredit([]).credit === 0);
 }
 
+console.log('\n\x1b[1m[5] 加价倍率\x1b[0m');
+{
+  const base = computeCost({ tiers: GLM, promptTokens: 1000, completionTokens: 1000 });
+  const x2 = computeCost({ tiers: GLM, promptTokens: 1000, completionTokens: 1000, markup: 2 });
+  ok('倍率 1 是原价', base.breakdown.markup === 1);
+  ok('倍率 2 翻倍', Math.abs(x2.credit - base.credit * 2) < 1e-9, `${x2.credit} vs ${base.credit * 2}`);
+  ok('rawCredit 不受倍率影响', Math.abs(x2.breakdown.rawCredit - base.breakdown.rawCredit) < 1e-9);
+  ok('分项积分不受倍率影响', Math.abs(x2.breakdown.inputCredit - base.breakdown.inputCredit) < 1e-9);
+
+  const bad = computeCost({ tiers: GLM, promptTokens: 1000, completionTokens: 1000, markup: 0 });
+  ok('倍率 0 回落到 1', bad.breakdown.markup === 1, String(bad.breakdown.markup));
+  const neg = computeCost({ tiers: GLM, promptTokens: 1000, completionTokens: 1000, markup: -3 });
+  ok('负倍率回落到 1', neg.breakdown.markup === 1);
+  const nan = computeCost({ tiers: GLM, promptTokens: 1000, completionTokens: 1000, markup: 'abc' });
+  ok('非法倍率回落到 1', nan.breakdown.markup === 1);
+}
+
+console.log('\n\x1b[1m[6] 时段分档\x1b[0m');
+{
+  // 白天 08:00-20:00 UTC 便宜，夜间贵
+  const DAYNIGHT = [
+    { start: 800, end: 2000, input: 5, cache: 1, output: 10 },
+    { start: 2000, end: 800, input: 10, cache: 2, output: 20 },
+  ];
+  // 2026-10-29T10:00:00Z → hhmm=1000 → 白天档
+  const dayTs = Date.UTC(2026, 9, 29, 10, 0) / 1000;
+  // 2026-10-29T23:00:00Z → hhmm=2300 → 夜间档
+  const nightTs = Date.UTC(2026, 9, 29, 23, 0) / 1000;
+
+  ok('白天档命中', pickTier(DAYNIGHT, 100, dayTs)?.input === 5, String(pickTier(DAYNIGHT, 100, dayTs)?.input));
+  ok('夜间档命中', pickTier(DAYNIGHT, 100, nightTs)?.input === 10, String(pickTier(DAYNIGHT, 100, nightTs)?.input));
+  ok('无时刻时不匹配时段档', pickTier(DAYNIGHT, 100)?.input !== 5);
+
+  // 按星期几
+  const WEEKEND = [
+    { days: ['sat', 'sun'], input: 3, cache: 1, output: 6 },
+    { days: ['mon', 'tue', 'wed', 'thu', 'fri'], input: 6, cache: 2, output: 12 },
+  ];
+  // 2026-10-31 是周六
+  const satTs = Date.UTC(2026, 9, 31, 12, 0) / 1000;
+  // 2026-10-29 是周四
+  const thuTs = Date.UTC(2026, 9, 29, 12, 0) / 1000;
+  ok('周六命中周末档', pickTier(WEEKEND, 100, satTs)?.input === 3, String(pickTier(WEEKEND, 100, satTs)?.input));
+  ok('周四命中工作日档', pickTier(WEEKEND, 100, thuTs)?.input === 6, String(pickTier(WEEKEND, 100, thuTs)?.input));
+
+  // 长度档和时段档混用：长度档优先按 token 数
+  const MIXED = [
+    { inputFrom: 0, inputTo: 1000, input: 2, cache: 1, output: 4 },
+    { inputFrom: 1001, inputTo: -1, input: 4, cache: 2, output: 8 },
+  ];
+  ok('混用表长度档仍生效', pickTier(MIXED, 2000)?.input === 4);
+}
+
 console.log('');
 const color = fail === 0 ? '\x1b[32m' : '\x1b[31m';
 console.log(`${color}结果：${pass} 通过\x1b[0m，${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${fail} 失败\x1b[0m`);

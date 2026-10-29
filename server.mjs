@@ -31,6 +31,8 @@ import { createCodeartsAuth, CodeartsAuthError } from './lib/codearts-auth.mjs';
 import { createAccountInfo } from './lib/account-info.mjs';
 import { buildCatalog } from './lib/model-catalog.mjs';
 import { checkProxy } from './lib/proxy-pool.mjs';
+import { createQuotaScanner } from './lib/quota-scan.mjs';
+import { parseResetAt } from './lib/scheduler.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -78,6 +80,39 @@ const panel = createPanel({ dataDir: DATA_DIR });
 const handlers = buildHandlers(cfg, store);
 // 出站节流：账号级并发/间隔/冷却，形状见 lib/pacing.mjs
 const governor = createGovernor({ cfg });
+
+/**
+ * 配额主动扫描器：定时为「账号 × 模型」发最小请求，提前发现哪条配额线被打满。
+ * probe 用非流式最小请求，只关心状态码和重置时刻。
+ */
+const quotaScanner = createQuotaScanner({
+  log: (m) => log('info', m),
+  probe: async ({ account, model }) => {
+    const creds = pickCredentials({
+      ctx: { authAccount: account },
+      panel,
+      cfg,
+    });
+    if (!creds) return { status: 0, error: 'no_credentials' };
+    const body = {
+      model,
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 1,
+      stream: false,
+    };
+    try {
+      const r = await forwardChatOnce({ body, cfg, panel, ctx: { authAccount: account }, credentials: creds });
+      const text = r.body?.toString?.('utf8') ?? '';
+      return {
+        status: r.status,
+        resetAt: parseResetAt({ headers: r.headers, body: text }),
+        error: r.status >= 400 ? text.slice(0, 200) : '',
+      };
+    } catch (e) {
+      return { status: 0, error: String(e?.message ?? e) };
+    }
+  },
+});
 // 在线更新：检测 GitHub 提交 → 下载 tarball → 校验 → 备份 → 换文件，见 lib/updater.mjs
 const updater = createUpdater({ cfg, rootDir: __dirname, dataDir: DATA_DIR, log });
 const BUILD = localRevision(__dirname);
@@ -514,6 +549,63 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       return void sendJson(res, okDel ? 200 : 404, { ok: okDel });
     }
 
+    /* ---- 调度 ---- */
+    if (p === '/schedule' && method === 'GET') {
+      return void sendJson(res, 200, {
+        ok: true,
+        accounts: panel.publicAccounts().map((a) => ({
+          id: a.id, name: a.name, enabled: a.enabled, weight: a.weight, schedule: a.schedule,
+        })),
+        affinity: { sessions: panel.affinity.size },
+        quota: quotaScanner.snapshot(50),
+      });
+    }
+
+    // 设置账号权重 / 清冷却 / 模型黑名单
+    if (seg[0] === 'schedule' && seg[1] && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      if (body.action === 'clear') {
+        const okClear = panel.clearAccountCooldown(seg[1], body.model);
+        return void sendJson(res, okClear ? 200 : 404, { ok: okClear });
+      }
+      const acc = panel.updateAccount(seg[1], {
+        ...(body.weight !== undefined ? { weight: body.weight } : {}),
+        ...(body.disabledModels !== undefined ? { disabledModels: body.disabledModels } : {}),
+      });
+      if (!acc) return void sendJson(res, 404, { error: { code: 'not_found' } });
+      return void sendJson(res, 200, { ok: true });
+    }
+
+    // 立即跑一轮配额扫描
+    if (p === '/quota/scan' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const models = Array.isArray(body.models) && body.models.length
+        ? body.models
+        : (cfg.quotaScan?.models ?? []);
+      const r = await quotaScanner.runDue(panel.accounts(), models, {
+        limit: Number(body.limit ?? cfg.quotaScan?.batchLimit ?? 6),
+        force: body.force === true,
+        isCooling: (uid, model) => {
+          const a = panel.findAccount(uid);
+          return a ? panel.scheduleSnapshot(uid, model)?.waitSec > 0 : false;
+        },
+        onThrottled: ({ account, model: m, resetAt }) => {
+          panel.reportFailure(account, {
+            status: 429,
+            message: 'quota scan: throttled',
+            model: m,
+            modelScoped: true,
+            resetAt,
+          });
+        },
+      });
+      return void sendJson(res, 200, { ok: true, ...r });
+    }
+
+    if (p === '/quota' && method === 'GET') {
+      return void sendJson(res, 200, { ok: true, rows: quotaScanner.snapshot(100) });
+    }
+
     /* ---- 代理池 ---- */
     if (p === '/proxies' && method === 'GET') {
       return void sendJson(res, 200, { ok: true, proxies: panel.publicProxies() });
@@ -823,6 +915,24 @@ function gatewayErrorStatus(e) {
  * 一次上游调用的重试 + 轮换：命中 rotateOnStatus 就换下一个账号再试一遍。
  * 流式请求只有在还没写响应头时才能重试。
  */
+/**
+ * 一次失败同时喂两个计数器：
+ *   - governor：节流层（并发/间隔/固定冷却），防止立刻再打同一个账号
+ *   - scheduler：调度层（四级退避/模型级冷却/会话降级），决定下一轮选谁
+ */
+function penalizeAccount(account, status, retryAfterMs, model, sessionKey, detail) {
+  if (!account) return;
+  governor.penalize(account, status, retryAfterMs);
+  panel.reportFailure(account, {
+    status,
+    message: detail,
+    model,
+    modelScoped: !!model && status === 429,
+    resetAt: retryAfterMs > 0 ? Date.now() / 1000 + retryAfterMs / 1000 : 0,
+    sessionKey,
+  });
+}
+
 async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
   const st = cfg.stealth ?? {};
   const attempts = Math.max(1, Math.min(5, st.retry?.maxAttempts ?? 3));
@@ -830,9 +940,20 @@ async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
   const tried = [];
   let lastError = null;
   let cooling = null;
+  const model = body?.model;
+  // 会话粘性：同一会话优先回到上次服务的账号，保住上游 prompt cache
+  const sessionKey = ctx?.sessionKey ?? ctx?.conversationId ?? null;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const creds = pickCredentials({ ctx, panel, cfg, exclude: tried });
+    // 走调度器选号（会话粘性 → 手动权重 → 平滑加权轮询），而不是裸轮询
+    const account = panel.pickAccount(ctx?.accountRef ?? null, {
+      model,
+      sessionKey,
+      exclude: tried,
+    });
+    const creds = account
+      ? pickCredentials({ ctx: { ...ctx, authAccount: account }, panel, cfg, exclude: tried })
+      : pickCredentials({ ctx, panel, cfg, exclude: tried });
     if (!creds) {
       if (tried.length === 0) {
         const e = new Error('没有可用账号：请先在控制台添加账号，或配置 upstream.ak/sk');
@@ -866,17 +987,23 @@ async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
     try {
       if (stream) {
         const r = await forwardChatStream({ body, cfg, panel, ctx, res, onUsage, credentials: creds });
-        if (r.status === 200 || !rotateOn.has(r.status) || attempt === attempts - 1) return r;
-        governor.penalize(creds.account, r.status, parseRetryAfter(r.headers?.['retry-after']));
+        if (r.status === 200 || !rotateOn.has(r.status) || attempt === attempts - 1) {
+          if (r.status === 200) panel.reportSuccess(creds.account, model, sessionKey);
+          return r;
+        }
+        penalizeAccount(creds.account, r.status, parseRetryAfter(r.headers?.['retry-after']), model, sessionKey, r.errorText);
       } else {
         const r = await forwardChatOnce({ body, cfg, panel, ctx, credentials: creds });
-        if (!rotateOn.has(r.status) || attempt === attempts - 1) return r;
-        governor.penalize(creds.account, r.status, parseRetryAfter(r.headers?.['retry-after']));
+        if (!rotateOn.has(r.status) || attempt === attempts - 1) {
+          if (r.status >= 200 && r.status < 300) panel.reportSuccess(creds.account, model, sessionKey);
+          return r;
+        }
+        penalizeAccount(creds.account, r.status, parseRetryAfter(r.headers?.['retry-after']), model, sessionKey, r.body?.toString?.('utf8'));
       }
     } catch (e) {
       lastError = e;
       if (res?.headersSent) throw e; // 已经往外吐了字节，重试只会污染响应
-      governor.penalize(creds.account, 500, 0);
+      penalizeAccount(creds.account, 500, 0, model, sessionKey, String(e?.message ?? e));
       if (attempt === attempts - 1) throw e;
     } finally {
       release();
@@ -2127,6 +2254,41 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`    $env:PLUGIN_ENV = "hc"`);
   console.log('');
 });
+
+/* 配额主动扫描：按间隔为「账号 × 模型」发最小请求，提前发现配额线打满 */
+const quotaScanMs = Number(cfg.quotaScan?.intervalMs ?? 6 * 3600 * 1000);
+if (cfg.quotaScan?.enabled === true && quotaScanMs > 0) {
+  const tick = async () => {
+    try {
+      const models = cfg.quotaScan?.models ?? [];
+      if (!models.length) return;
+      const r = await quotaScanner.runDue(panel.accounts(), models, {
+        limit: Number(cfg.quotaScan?.batchLimit ?? 6),
+        isCooling: (uid, m) => {
+          const a = panel.findAccount(uid);
+          return a ? panel.scheduleSnapshot(uid, m)?.waitSec > 0 : false;
+        },
+        onThrottled: ({ account, model, resetAt }) => {
+          panel.reportFailure(account, {
+            status: 429,
+            message: 'quota scan: throttled',
+            model,
+            modelScoped: true,
+            resetAt,
+          });
+        },
+      });
+      if (r.scanned) {
+        log('info', `配额扫描：查了 ${r.scanned} 条，正常 ${r.ok}，到限 ${r.throttled}，失败 ${r.failed}`);
+      }
+    } catch (e) {
+      log('warn', `配额扫描异常：${e?.message ?? e}`);
+    }
+  };
+  // 启动后 60 秒跑第一次，之后按间隔
+  setTimeout(tick, 60_000).unref?.();
+  setInterval(tick, quotaScanMs).unref?.();
+}
 
 /* 定时检查更新：只记录，不自动换文件（换文件会中断正在跑的请求） */
 const autoCheckMs = Number(cfg.update?.autoCheckMs ?? 0);

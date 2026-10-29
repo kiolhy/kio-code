@@ -103,6 +103,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <button data-tab="usage">数据看板</button>
     <button data-tab="models">模型</button>
     <button data-tab="proxies">代理</button>
+    <button data-tab="schedule">调度</button>
     <button data-tab="agents">智能体配置</button>
     <button data-tab="settings">设置</button>
     <button data-tab="maint">维护</button>
@@ -262,7 +263,56 @@ socks5://user:pass@5.6.7.8:1080
       <tbody id="proxiesBody"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
     </table></div>
   </section>
-  <section class="page" id="page-agents">
+
+  <!-- ============ 调度 ============ -->
+  <section class="page" id="page-schedule">
+    <div class="row">
+      <h2 style="margin:0">账号调度</h2>
+      <span class="spacer"></span>
+      <button onclick="loadSchedule()">刷新</button>
+    </div>
+    <div class="hint" style="margin:10px 0">
+      选号顺序：<b>会话粘性</b>（同一会话回到上次的账号，保住上游 prompt cache）→
+      <b>手动权重</b>（&gt;1 的优先接单）→ <b>平滑加权轮询</b>（等权时就是纯轮询）。
+      失败按类型分级退避：软限流 10 分钟起翻倍到 2 小时，硬失败连续 3 次熔断 30 分钟起，
+      未知错误连续 5 次降级 10 分钟起。模型级 429 只封那个模型，不拖死整个账号。
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin:0">账号状态</h3>
+        <span class="spacer"></span>
+        <span class="hint" id="schedHint"></span>
+      </div>
+      <table style="margin-top:10px">
+        <thead><tr>
+          <th>账号</th><th>状态</th><th class="num">权重</th><th>冷却</th>
+          <th>模型冷却</th><th>连击</th><th>最近错误</th><th class="num">操作</th>
+        </tr></thead>
+        <tbody id="schedBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h3 style="margin:0">配额主动扫描</h3>
+        <span class="spacer"></span>
+        <button onclick="runQuotaScan(this)">立即扫描一轮</button>
+      </div>
+      <div class="hint" style="margin:8px 0">
+        定时为「账号 × 模型」发一个最小请求，提前发现哪条配额线已被打满。
+        已登记 429 窗口的线不再主动查，窗口结束后自动恢复。
+      </div>
+      <table>
+        <thead><tr>
+          <th>账号</th><th>模型</th><th>上次查询</th><th>下次查询</th>
+          <th>结果</th><th>重试</th><th>窗口结束</th>
+        </tr></thead>
+        <tbody id="quotaBody"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
     <h2>智能体接入</h2>
     <div class="card">
       <div class="field"><label>网关地址</label><input id="agBase" readonly></div>
@@ -543,6 +593,7 @@ function showTab(tab) {
   if (tab === 'usage') loadUsage();
   if (tab === 'models') loadModels();
   if (tab === 'proxies') loadProxies();
+  if (tab === 'schedule') loadSchedule();
   if (tab === 'logs') loadLogs();
   if (tab === 'settings') loadSettings();
   if (tab === 'maint') loadMaint();
@@ -927,6 +978,111 @@ async function refreshModels(btn) {
   finally { if (btn) { btn.disabled = false; btn.textContent = '重新探测全部账号'; } }
 }
 
+/* ---------------- 调度 ---------------- */
+function fmtWait(sec) {
+  if (!sec || sec <= 0) return '—';
+  if (sec < 60) return sec + ' 秒';
+  if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return h + ' 小时' + (m ? ' ' + m + ' 分' : '');
+}
+
+async function loadSchedule() {
+  try {
+    const j = await api('/schedule');
+    const rows = j.accounts ?? [];
+    const readyN = rows.filter((r) => r.schedule?.ready).length;
+    $('schedHint').textContent = `共 ${rows.length} 个账号 · 当前可用 ${readyN} · 活跃会话 ${j.affinity?.sessions ?? 0}`;
+
+    $('schedBody').innerHTML = rows.length
+      ? rows.map((r) => {
+          const s = r.schedule ?? {};
+          const cooling = s.waitSec > 0;
+          const pill = !r.enabled ? '<span class="pill">已停用</span>'
+            : s.tokenExpired ? '<span class="pill err">凭据失效</span>'
+            : cooling ? `<span class="pill warn">冷却 ${fmtWait(s.waitSec)}</span>`
+            : '<span class="pill ok">可用</span>';
+          const coolDetail = [
+            s.cooldownSec ? `软限流 ${fmtWait(s.cooldownSec)}` : '',
+            s.breakerSec ? `熔断 ${fmtWait(s.breakerSec)}` : '',
+            s.degradeSec ? `降级 ${fmtWait(s.degradeSec)}` : '',
+            s.balanceSec ? `余额 ${fmtWait(s.balanceSec)}` : '',
+          ].filter(Boolean).join(' · ') || '—';
+          const modelCool = Object.entries(s.modelCooldowns ?? {})
+            .map(([m, t]) => `${m} ${fmtWait(t)}`).join('<br>') || '—';
+          const strikes = [
+            s.softStreak ? `软${s.softStreak}` : '',
+            s.unverifiedStreak ? `模型${s.unverifiedStreak}` : '',
+            s.fails ? `硬${s.fails}` : '',
+            s.degradeCount ? `未知${s.degradeCount}` : '',
+          ].filter(Boolean).join(' / ') || '—';
+          return `<tr>
+            <td>${esc(r.name || r.id)}</td>
+            <td>${pill}</td>
+            <td class="num"><input type="number" min="1" max="100" value="${r.weight ?? 1}"
+              style="width:64px" onchange="setWeight('${r.id}', this.value)"></td>
+            <td class="hint">${coolDetail}</td>
+            <td class="hint">${modelCool}</td>
+            <td class="hint">${strikes}</td>
+            <td class="hint" title="${esc(s.lastError || '')}">${esc((s.lastError || '—').slice(0, 40))}</td>
+            <td class="num"><button onclick="clearCool('${r.id}')">清冷却</button></td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="8" class="empty">还没有账号</td></tr>';
+
+    const q = j.quota ?? [];
+    $('quotaBody').innerHTML = q.length
+      ? q.map((r) => {
+          const res = r.lastResult === 'ok' ? '<span class="pill ok">正常</span>'
+            : r.lastResult === 'throttled' ? '<span class="pill warn">已到限</span>'
+            : r.lastResult === 'error' ? '<span class="pill err">失败</span>' : '—';
+          return `<tr>
+            <td>${esc(String(r.uid).slice(0, 8))}</td>
+            <td class="mono">${esc(r.model)}</td>
+            <td class="hint">${r.lastScan ? ago(new Date(r.lastScan * 1000).toISOString()) : '从未'}</td>
+            <td class="hint">${r.dueIn > 0 ? '还有 ' + fmtWait(r.dueIn) : '随时'}</td>
+            <td>${res}</td>
+            <td class="hint">${r.attempts ? r.attempts + ' 次' : '—'}</td>
+            <td class="hint">${r.resetAt ? new Date(r.resetAt * 1000).toLocaleString('zh-CN') : '—'}</td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="7" class="empty">还没有扫描记录（在设置里开启配额扫描并选择模型）</td></tr>';
+  } catch (e) {
+    $('schedHint').textContent = '加载失败：' + e.message;
+  }
+}
+
+async function setWeight(id, value) {
+  try {
+    await api('/schedule/' + encodeURIComponent(id), {
+      method: 'POST',
+      body: JSON.stringify({ weight: Number(value) || 1 }),
+    });
+    loadSchedule();
+  } catch (e) { alert('设置失败：' + e.message); }
+}
+
+async function clearCool(id) {
+  try {
+    await api('/schedule/' + encodeURIComponent(id), {
+      method: 'POST',
+      body: JSON.stringify({ action: 'clear' }),
+    });
+    loadSchedule();
+  } catch (e) { alert('清除失败：' + e.message); }
+}
+
+async function runQuotaScan(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '扫描中…'; }
+  try {
+    const j = await api('/quota/scan', { method: 'POST', body: JSON.stringify({}) });
+    alert(`扫描 ${j.scanned} 条：正常 ${j.ok}，到限 ${j.throttled}，失败 ${j.failed}`);
+    loadSchedule();
+  } catch (e) { alert('扫描失败：' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '立即扫描一轮'; } }
+}
+
 /* ---------------- 代理池 ---------------- */
 async function loadProxies() {
   try {
@@ -943,7 +1099,7 @@ async function loadProxies() {
           const st = p.lastCheckOk === true
             ? '<span class="pill ok">可用</span>'
             : p.lastCheckOk === false
-              ? '<span class="pill bad">不可用</span>'
+              ? '<span class="pill err">不可用</span>'
               : '<span class="pill">未检测</span>';
           const when = p.lastCheckAt ? new Date(p.lastCheckAt).toLocaleString('zh-CN') : '—';
           return `<tr>
