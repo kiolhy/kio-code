@@ -174,6 +174,107 @@ console.log('\n\x1b[1m[4] 端到端：上游 SSE 不带 usage\x1b[0m');
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+console.log('\n\x1b[1m[5] 端到端：上游 SSE 用 data:无空格 + 带 usage\x1b[0m');
+{
+  // 真实码道上游发的是 `data:{...}`（冒号后没有空格），不是标准 SSE 的
+  // `data: {...}`。只认带空格的那种会把所有 chunk 都跳过，usage 永远是 0
+  // 但 estimated 又是 false（因为以为上游给了）—— 流水里就是 in=0 out=0。
+  const upstream = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const w = (o) => res.write(`data:${JSON.stringify(o)}\n\n`);
+      w({ id: 'c1', choices: [{ delta: { content: '这是' } }] });
+      w({ id: 'c1', choices: [{ delta: { content: '一段测试回复内容' } }] });
+      w({ id: 'c1', choices: [{ delta: { content: '' }, finish_reason: 'stop' }] });
+      w({ id: 'c1', choices: [], usage: { prompt_tokens: 25, completion_tokens: 40, total_tokens: 65 } });
+      res.write('data:[DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const upPort = upstream.address().port;
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kio-usage2-'));
+  fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'data', 'settings.json'),
+    JSON.stringify({
+      panel: { password: null, changed: false },
+      accounts: [{
+        id: 'acc1', name: 'test', enabled: true, region: 'cn',
+        accessKeyId: 'HSTAICLDUR19TESTAK', secretAccessKey: 'SK_TEST_SECRET_0123456789abcdef',
+        securityToken: 'TOK', userName: 'hid_test_user',
+      }],
+      apiKeys: [], proxies: [], settings: {},
+    })
+  );
+  const cfg = {
+    mode: 'gateway',
+    identity: { agentId: 'a', codeAgentId: 'c', userName: 'u', userId: 'i', domainId: 'd', stationType: 'china' },
+    gateway: { defaultRegion: 'cn', regions: { cn: `http://127.0.0.1:${upPort}` }, chatPath: '/v1/chat/completions', owner: 'codearts', requireKey: false, models: [] },
+    stealth: { enabled: false },
+    capture: { enabled: false },
+  };
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(cfg, null, 2));
+
+  const { spawn } = await import('node:child_process');
+  const probe = http.createServer();
+  await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+  const port = probe.address().port;
+  await new Promise((r) => probe.close(r));
+
+  const srv = spawn(process.execPath, ['server.mjs'], {
+    cwd: path.resolve('.'),
+    env: { ...process.env, MOCK_HUB_CONFIG: path.join(dir, 'config.json'), MOCK_HUB_DATA: path.join(dir, 'data'), PORT: String(port) },
+    stdio: 'ignore',
+  });
+
+  let ready = false;
+  for (let i = 0; i < 60; i++) {
+    try {
+      const h = await fetch(`http://127.0.0.1:${port}/health`);
+      if (h.ok) { ready = true; break; }
+    } catch { /* 还没起 */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  if (!ready) {
+    ok('服务启动', false, '超时');
+  } else {
+    ok('服务启动', true);
+
+    const r = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'GLM-5.2', messages: [{ role: 'user', content: '你好' }], stream: true }),
+    });
+    const text = await r.text();
+    ok('流式返回 200', r.status === 200, String(r.status));
+    ok('内容透传', text.includes('一段测试回复内容'), text.slice(0, 60));
+
+    await new Promise((r2) => setTimeout(r2, 400));
+
+    const usageFile = path.join(dir, 'data', 'usage.jsonl');
+    const rows = fs.existsSync(usageFile)
+      ? fs.readFileSync(usageFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+    ok('落库 1 条', rows.length === 1, String(rows.length));
+    const row = rows[0] ?? {};
+    // 这两条是回归重点：之前是 0/0
+    ok('promptTokens 用上游真实值 25', row.promptTokens === 25, String(row.promptTokens));
+    ok('completionTokens 用上游真实值 40', row.completionTokens === 40, String(row.completionTokens));
+    ok('标记为真实值（非估算）', row.estimated === false, String(row.estimated));
+    // 测试环境没有模型价格表，credit 会是 null；这里只验证 token 落库正确
+    ok('total = 入 + 出', row.promptTokens + row.completionTokens === 65, `${row.promptTokens}+${row.completionTokens}`);
+
+    srv.kill();
+  }
+  upstream.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 console.log('');
 const color = fail === 0 ? '\x1b[32m' : '\x1b[31m';
 console.log(`${color}结果：${pass} 通过\x1b[0m，${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${fail} 失败\x1b[0m`);
