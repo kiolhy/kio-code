@@ -297,6 +297,59 @@ console.log('\n\x1b[1m[6] 跨账号模型目录\x1b[0m');
 }
 
 server.close();
+
+console.log('\n\x1b[1m[parseModels] 两类账号形态\x1b[0m');
+{
+  // A 类（hid 域）：model_id 有值，model_name 是显示名
+  const A = {
+    gpts: {
+      models: [
+        { model_parameters: { model_id: 'kimi-k3' }, model_name: 'Kimi-K3', model_alias: 'kimi-k3' },
+        { model_parameters: { model_id: 'glm-5.2-sft-harmony' }, model_name: 'GLM-5.2-ArkTS-SPARK', model_alias: 'glm-5.2-sft-harmony' },
+      ],
+    },
+  };
+  const a = parseModels(A);
+  ok('A 类 id 取 model_id', a[0]?.id === 'kimi-k3', a[0]?.id);
+  ok('A 类 name 取 model_name', a[0]?.name === 'Kimi-K3', a[0]?.name);
+  ok('A 类 alias 保留', a[0]?.alias === 'kimi-k3', a[0]?.alias);
+
+  // B 类（CSDN 域）：model_id 缺失，model_name 也缺失，只有 model_alias
+  // 实测这种账号 id 位置放的是显示名（Kimi-K3），真 id 在 alias 里。
+  // 之前回落到 model_name 拿到的是空，最后把 alias 当 id 用反了，
+  // 导致上游回 InferHub.002002009.404「Route missed for model: Kimi-K3」。
+  const B = {
+    gpts: {
+      models: [
+        { model_parameters: {}, model_alias: 'kimi-k3' },
+        { model_parameters: {}, model_alias: 'glm-5.2-sft-harmony' },
+        { model_parameters: {}, model_alias: 'GLM-5.2' },
+      ],
+    },
+  };
+  const b = parseModels(B);
+  ok('B 类 id 回落 model_alias', b[0]?.id === 'kimi-k3', b[0]?.id);
+  ok('B 类 id 第二个也对', b[1]?.id === 'glm-5.2-sft-harmony', b[1]?.id);
+  ok('B 类 name 为空（没显示名）', b[0]?.name === null, String(b[0]?.name));
+  ok('B 类 alias 保留', b[0]?.alias === 'kimi-k3', b[0]?.alias);
+
+  // 关键回归：model_name 有值但 model_id 缺失时，不能拿 model_name 当 id
+  const C = {
+    gpts: {
+      models: [
+        { model_parameters: {}, model_name: 'Kimi-K3', model_alias: 'kimi-k3' },
+      ],
+    },
+  };
+  const c = parseModels(C);
+  ok('C 类 id 仍然取 alias 不取显示名', c[0]?.id === 'kimi-k3', c[0]?.id);
+  ok('C 类 name 记下显示名', c[0]?.name === 'Kimi-K3', c[0]?.name);
+
+  // 三个都缺 → 丢掉，不塞假 id
+  const D = { gpts: { models: [{ model_parameters: {} }] } };
+  ok('三个字段都缺时丢掉该条', parseModels(D).length === 0, String(parseModels(D).length));
+}
+
 console.log('');
 const color = fail === 0 ? '\x1b[32m' : '\x1b[31m';
 console.log(`${color}结果：${pass} 通过\x1b[0m，${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${fail} 失败\x1b[0m`);
