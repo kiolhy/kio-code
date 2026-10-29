@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { verifyRequest } from '../lib/sign.mjs';
+import { resolveModelId, buildUpstreamBody } from '../lib/gateway.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.dirname(__dirname);
@@ -352,6 +353,52 @@ try {
   ok('错误码是 no_credentials', j4?.error?.code === 'no_credentials', j4?.error?.code ?? '');
 } finally {
   cleanup();
+}
+
+
+console.log('\n\x1b[1m[显示名解析] 调用方填显示名也要能调通\x1b[0m');
+{
+  const acc = {
+    info: {
+      models: [
+        { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek-V4.1-Flash-1017', alias: 'deepseek-v4.1-flash-1017' },
+        { id: 'GLM-5.2', name: 'GLM-5.2', alias: 'GLM-5.2' },
+        { id: 'glm-5.2-sft-harmony', name: 'GLM-5.2-ArkTS-SPARK', alias: 'glm-5.2-sft-harmony' },
+        { id: 'openpangu-2.0-pro', name: 'OpenPangu-2.0-Pro', alias: 'openpangu-2.0-pro' },
+        { id: 'kimi-k3', name: 'Kimi-K3', alias: 'kimi-k3' },
+      ],
+    },
+  };
+
+  // 上游只认 model_id。调用方照着 /v1/models 填显示名会拿到
+  // HTTP 200 + InferHub.002002009.404「The model is not registered」。
+  ok('显示名 → id', resolveModelId(acc, 'DeepSeek-V4.1-Flash-1017') === 'deepseek-v4.1-flash-1017',
+    resolveModelId(acc, 'DeepSeek-V4.1-Flash-1017'));
+  ok('id 原样返回', resolveModelId(acc, 'deepseek-v4.1-flash-1017') === 'deepseek-v4.1-flash-1017');
+  ok('显示名（带横线）→ id', resolveModelId(acc, 'GLM-5.2-ArkTS-SPARK') === 'glm-5.2-sft-harmony',
+    resolveModelId(acc, 'GLM-5.2-ArkTS-SPARK'));
+  ok('OpenPangu 显示名 → id', resolveModelId(acc, 'OpenPangu-2.0-Pro') === 'openpangu-2.0-pro',
+    resolveModelId(acc, 'OpenPangu-2.0-Pro'));
+  ok('Kimi 显示名 → id', resolveModelId(acc, 'Kimi-K3') === 'kimi-k3', resolveModelId(acc, 'Kimi-K3'));
+  ok('id 与显示名相同的模型不受影响', resolveModelId(acc, 'GLM-5.2') === 'GLM-5.2');
+  ok('未知模型原样返回（让上游报错）', resolveModelId(acc, '不存在的模型') === '不存在的模型');
+  ok('空模型名安全', resolveModelId(acc, '') === '');
+  ok('无 account 时原样返回', resolveModelId(null, 'DeepSeek-V4.1-Flash-1017') === 'DeepSeek-V4.1-Flash-1017');
+  ok('account 无 info 时原样返回',
+    resolveModelId({}, 'DeepSeek-V4.1-Flash-1017') === 'DeepSeek-V4.1-Flash-1017');
+
+  // buildUpstreamBody 带 account 时会自动解析
+  const b = buildUpstreamBody(
+    { model: 'DeepSeek-V4.1-Flash-1017', messages: [{ role: 'user', content: 'hi' }] },
+    { stream: false, account: acc }
+  );
+  ok('buildUpstreamBody 自动解析显示名', b.model === 'deepseek-v4.1-flash-1017', b.model);
+
+  const b2 = buildUpstreamBody(
+    { model: 'DeepSeek-V4.1-Flash-1017', messages: [] },
+    { stream: false }
+  );
+  ok('不传 account 时不动 model', b2.model === 'DeepSeek-V4.1-Flash-1017', b2.model);
 }
 
 console.log('');

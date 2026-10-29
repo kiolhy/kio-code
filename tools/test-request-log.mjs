@@ -114,10 +114,11 @@ console.log('\n\x1b[1m[2] 每条的消耗金额与缓存百分比\x1b[0m');
   ok('缓存百分比按 token 加权', r5.cachePct === 22.9, String(r5.cachePct));
   ok('cacheRatio 是小数', Math.abs(r5.cacheRatio - 32 / 140) < 1e-9, String(r5.cacheRatio));
 
-  // credit 按模型价格算，跟状态码无关（失败请求也消耗了输入 token）
+  // 失败请求不计费：错误响应里一个 token 都没真正生成，
+  // 按输入 token 扣钱是错的（实测未注册模型报 404 却扣了 6.18 积分）
   const failed = r.rows.find((x) => x.status === 500);
   ok('失败行仍记录 token', failed?.promptTokens > 0);
-  ok('失败行也按 token 算积分', typeof failed?.credit === 'number', String(failed?.credit));
+  ok('失败行不计费', failed?.credit === null, String(failed?.credit));
 }
 
 console.log('\n\x1b[1m[3] 汇总（按筛选后的集合算）\x1b[0m');
@@ -126,7 +127,9 @@ console.log('\n\x1b[1m[3] 汇总（按筛选后的集合算）\x1b[0m');
   ok('汇总请求数 = 总数', all.summary.requests === 12, String(all.summary.requests));
   ok('汇总统计失败数', all.summary.errors === 2, String(all.summary.errors));
   ok('汇总 credit 有值', all.summary.credit > 0, String(all.summary.credit));
-  ok('汇总 creditKnown = 全部条数', all.summary.creditKnown === 12, String(all.summary.creditKnown));
+  // 12 条里 2 条是 500，失败不计费，所以 creditKnown 是 10
+  ok('汇总 creditKnown 只算成功的', all.summary.creditKnown === 10, String(all.summary.creditKnown));
+  ok('汇总 creditUnknown 含失败的', all.summary.creditUnknown === 2, String(all.summary.creditUnknown));
   ok('汇总 cachePct 是数字', typeof all.summary.cachePct === 'number', String(all.summary.cachePct));
   ok('汇总 totalTokens = 入 + 出',
     all.summary.totalTokens === all.summary.promptTokens + all.summary.completionTokens);
