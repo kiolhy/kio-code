@@ -19,6 +19,7 @@ import {
   anthropicToOpenAI,
   openAIToAnthropic,
   pickCredentials,
+  ensureUsage,
 } from './lib/gateway.mjs';
 import { verifyRequest, parseAuthorization } from './lib/sign.mjs';
 import { createGovernor, parseRetryAfter } from './lib/pacing.mjs';
@@ -1124,7 +1125,7 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
     authAccount: verdict.ok ? panel.pickAccount(verdict.key?.accountRef ?? null) : panel.pickAccount(null),
   };
 
-  const finishUsage = ({ usage, account, model, status, stream }) => {
+  const finishUsage = ({ usage, account, model, status, stream, estimated }) => {
     panel.recordUsage({
       keyId: ctx.authKey?.id ?? null,
       keyName: ctx.authKey?.name ?? null,
@@ -1137,6 +1138,7 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
       completionTokens: usage?.completion_tokens ?? usage?.output_tokens ?? 0,
       // 原始 usage 交给面板归一化缓存字段（各家字段名不同，见 lib/cache-stats.mjs）
       usage,
+      estimated: estimated === true || usage?._estimated === true,
       durMs: Date.now() - started,
       stream: !!stream,
     });
@@ -1153,7 +1155,7 @@ if (p === '/v1/chat/completions' && method === 'POST') {
     if (body.stream === true) {
       const r = await callUpstreamWithRotation({
         body, ctx, stream: true, res,
-        onUsage: ({ usage, account, model }) => finishUsage({ usage, account, model, status: 200, stream: true }),
+        onUsage: ({ usage, account, model, estimated }) => finishUsage({ usage, account, model, status: 200, stream: true, estimated }),
       });
       if (r.status !== 200) {
         if (!res.headersSent) {
@@ -1174,7 +1176,8 @@ if (p === '/v1/chat/completions' && method === 'POST') {
         error: { code: 'bad_upstream_response', message: r.body.toString('utf8').slice(0, 2000) },
       });
     }
-    finishUsage({ usage: json?.usage, account: r.account, model: body?.model, status: r.status, stream: false });
+    const { usage: u2, estimated } = ensureUsage(json?.usage, { requestBody: body, responseJson: json });
+    finishUsage({ usage: u2, account: r.account, model: body?.model, status: r.status, stream: false, estimated });
     return void sendJson(res, r.status, json);
   } catch (e) {
     const code = gatewayErrorStatus(e);

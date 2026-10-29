@@ -1,6 +1,6 @@
 {
   "name": "kio-code-gateway",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "type": "module",
   "description": "码道（CodeArts）CLI 反代网关：OpenAI 兼容入口 + 多账号调度 + 控制台",
@@ -16,7 +16,7 @@
   "scripts": {
     "start": "node server.mjs",
     "gateway": "node server.mjs",
-    "test": "node tools/selftest.mjs && node tools/test-tools.mjs && node tools/test-replay.mjs && node tools/test-batch.mjs && node tools/test-panel.mjs && node tools/test-stealth.mjs && node tools/test-gateway.mjs && node tools/test-update.mjs && node tools/test-oauth.mjs && node tools/test-codearts-auth.mjs && node tools/test-account-info.mjs && node tools/test-cache.mjs && node tools/test-gateway-mode.mjs && node tools/test-pricing.mjs && node tools/test-proxy-pool.mjs",
+    "test": "node tools/selftest.mjs && node tools/test-tools.mjs && node tools/test-replay.mjs && node tools/test-batch.mjs && node tools/test-panel.mjs && node tools/test-stealth.mjs && node tools/test-gateway.mjs && node tools/test-update.mjs && node tools/test-oauth.mjs && node tools/test-codearts-auth.mjs && node tools/test-account-info.mjs && node tools/test-cache.mjs && node tools/test-gateway-mode.mjs && node tools/test-pricing.mjs && node tools/test-proxy-pool.mjs && node tools/test-stream-usage.mjs",
     "test:gateway": "node tools/test-gateway.mjs",
     "test:stealth": "node tools/test-stealth.mjs",
     "test:panel": "node tools/test-panel.mjs",
@@ -28,7 +28,8 @@
     "probe:upstream": "node tools/probe-upstream.mjs",
     "test:gateway-mode": "node tools/test-gateway-mode.mjs",
     "test:pricing": "node tools/test-pricing.mjs",
-    "test:proxy": "node tools/test-proxy-pool.mjs"
+    "test:proxy": "node tools/test-proxy-pool.mjs",
+    "test:stream-usage": "node tools/test-stream-usage.mjs"
   },
   "dependencies": {},
   "devDependencies": {}
