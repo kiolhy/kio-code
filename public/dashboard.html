@@ -1454,6 +1454,9 @@ async function loadRequests() {
     $('reqBody').innerHTML = rows.length
       ? rows.map((r) => {
           const est = r.estimated ? ' <span class="pill warn" title="上游没返回 usage，token 数为本地估算">估算</span>' : '';
+          const suspect = r.usageSuspect
+            ? ` <span class="pill err" title="上游返回了 usage 但字段名没对上，实际字段：${esc((r.usageSuspect.keys || []).join(', '))}">用量异常</span>`
+            : '';
           const stream = r.stream ? ' <span class="pill off">流</span>' : '';
           const ok = r.status >= 200 && r.status < 400;
           const credit = r.credit == null
@@ -1464,7 +1467,7 @@ async function loadRequests() {
             : (r.cachedTokens ? fmtTok(r.cachedTokens) : '<span class="muted">0</span>');
           return `<tr>
             <td class="muted mono">${new Date(r.ts).toLocaleString('zh-CN')}</td>
-            <td class="mono">${esc(r.model)}${est}${stream}</td>
+            <td class="mono">${esc(r.model)}${est}${suspect}${stream}</td>
             <td class="mono muted">${esc(r.accountName || '—')}</td>
             <td class="mono muted">${esc(r.keyName || '—')}</td>
             <td class="num">${ok ? `<span class="pill ok">${r.status}</span>` : `<span class="pill err">${r.status}</span>`}</td>

@@ -1283,6 +1283,16 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
   };
 
   const finishUsage = ({ usage, account, model, status, stream, estimated }) => {
+    // usage 可能来自不同上游，字段名不完全统一。这里做一次归一化，
+    // 避免出现「有 usage 对象但 token 全是 0」——那会让面板显示 0 入 0 出，
+    // 看着像没记录，实际是字段名没对上。
+    const u = usage && typeof usage === 'object' ? usage : null;
+    const numOr = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const promptTokens =
+      numOr(u?.prompt_tokens) ?? numOr(u?.input_tokens) ?? numOr(u?.promptTokens) ?? numOr(u?.inputTokens) ?? 0;
+    const completionTokens =
+      numOr(u?.completion_tokens) ?? numOr(u?.output_tokens) ?? numOr(u?.completionTokens) ?? numOr(u?.outputTokens) ?? 0;
+
     panel.recordUsage({
       keyId: ctx.authKey?.id ?? null,
       keyName: ctx.authKey?.name ?? null,
@@ -1291,8 +1301,8 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
       model: model ?? body?.model ?? 'unknown',
       route: p.includes('messages') ? 'gateway.messages' : 'gateway.chat',
       status: status ?? 200,
-      promptTokens: usage?.prompt_tokens ?? usage?.input_tokens ?? 0,
-      completionTokens: usage?.completion_tokens ?? usage?.output_tokens ?? 0,
+      promptTokens,
+      completionTokens,
       // 原始 usage 交给面板归一化缓存字段（各家字段名不同，见 lib/cache-stats.mjs）
       usage,
       estimated: estimated === true || usage?._estimated === true,
