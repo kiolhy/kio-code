@@ -108,9 +108,49 @@ app-id: CodeAgent3.0
 {"error_code":"4000","error_msg":"invalid channel, group not found","result":null}
 ```
 
-这是**业务状态**（账号没开通免费权益），不是鉴权失败。代码把它单独记为「业务拒绝」，不当成错误。
+这是**业务状态**（账号没开通免费权益），不是鉴权失败。
 
-有 benefit 套餐的账号会正常返回余额，届时 `balance` / `balanceTotal` 自动填充。
+### 无套餐时完全隐藏
+
+`benefit.skipped: true` 标记这个状态，**不写进 `errors`**，面板也**整块隐藏**「剩余积分」区域 ——
+不再每次都弹一条 `error_code 4000` 的警告。
+
+有 benefit 套餐的账号会正常返回余额，届时 `balance` / `balanceTotal` 自动填充，面板显示余额区块。
+
+### 免费权益领取（claim）
+
+`POST /api/v1/benefit/claim` —— CLI 的 `kjn()` 逻辑：
+
+```js
+let t = await IG();                       // gateway config 有模型
+if (!await gG()) return;                  // claim 成功才能用 benefit 模型
+for (let e of t.models) n[e.model_id] = { is_free_benefit: true };
+```
+
+**claim 不返回价格，它是「解锁开关」** —— 领取每日免费额度后才能调用 benefit 模型。
+
+只有账号真的开通 benefit 套餐（`benefit.enabled === true`）才会调 claim。
+
+| 字段 | 含义 |
+|---|---|
+| `benefit.claimed` | 是否领取成功 |
+| `benefit.claimResult` | 领取返回的原始结果 |
+| `benefit.claimCode` | 失败时的错误码 |
+| `benefit.claimMessage` | 失败时的中文说明 |
+
+claim 错误码：
+
+| 码 | 含义 |
+|---|---|
+| `4000` | 参数错误 / JSON 解析失败 |
+| `4001` | X-Auth-Token 缺失或无效 |
+| `4002` | X-Auth-Token 过期 |
+| `4003` | 用户禁用 |
+| `4004` | 权益不存在 / 已过期 / user 不存在 |
+| `4006` | daily claim limit exhausted（每日名额耗尽） |
+| `5000` | internal error |
+
+claim 失败也**不写进 `errors`**，只在 `benefit.claimMessage` 里说明。
 
 ## 四、跨账号模型目录
 

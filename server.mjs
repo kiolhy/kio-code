@@ -29,6 +29,7 @@ import { createOAuth, OAuthError } from './lib/oauth.mjs';
 import { createCodeartsAuth, CodeartsAuthError } from './lib/codearts-auth.mjs';
 import { createAccountInfo } from './lib/account-info.mjs';
 import { buildCatalog } from './lib/model-catalog.mjs';
+import { checkProxy } from './lib/proxy-pool.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -512,6 +513,77 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       return void sendJson(res, okDel ? 200 : 404, { ok: okDel });
     }
 
+    /* ---- 代理池 ---- */
+    if (p === '/proxies' && method === 'GET') {
+      return void sendJson(res, 200, { ok: true, proxies: panel.publicProxies() });
+    }
+
+    // 批量添加：{ text: "http://1.2.3.4:8080\nsocks5://user:pass@5.6.7.8:1080" }
+    if (p === '/proxies' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 4 * 1024 * 1024)).toString('utf8') || '{}');
+      const text = body.text ?? body.list ?? '';
+      const r = panel.addProxies(text);
+      log('info', `代理批量添加：新增 ${r.added.length}，跳过 ${r.skipped.length}，失败 ${r.errors.length}`);
+      return void sendJson(res, 200, {
+        ok: true,
+        added: r.added.map((x) => ({ id: x.id, label: x.label, url: x.url })),
+        skipped: r.skipped,
+        errors: r.errors,
+        total: panel.proxies().length,
+      });
+    }
+
+    if (seg[0] === 'proxies' && seg[1] && method === 'PATCH') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const x = panel.updateProxy(seg[1], body);
+      if (!x) return void sendJson(res, 404, { error: { code: 'not_found' } });
+      return void sendJson(res, 200, { ok: true });
+    }
+
+    if (seg[0] === 'proxies' && seg[1] && method === 'DELETE') {
+      const okDel = panel.deleteProxy(seg[1]);
+      return void sendJson(res, okDel ? 200 : 404, { ok: okDel });
+    }
+
+    // 健康检查：单个或全部
+    if (p === '/proxies/check' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const targets = body.id
+        ? panel.proxies().filter((x) => x.id === body.id || x.url === body.id)
+        : panel.proxies().filter((x) => x.enabled !== false);
+      const testUrl = body.testUrl || cfg.proxyCheck?.testUrl || 'https://www.huaweicloud.com';
+      const timeoutMs = Number(body.timeoutMs || cfg.proxyCheck?.timeoutMs || 8000);
+      // 并发 6
+      const results = [];
+      for (let i = 0; i < targets.length; i += 6) {
+        const chunk = targets.slice(i, i + 6);
+        const rs = await Promise.all(
+          chunk.map(async (x) => {
+            const r = await checkProxy({ proxy: x, testUrl, timeoutMs });
+            panel.updateProxy(x.id, {
+              lastCheckAt: new Date().toISOString(),
+              lastCheckOk: r.ok,
+              lastCheckMs: r.durMs,
+              lastError: r.error,
+            });
+            return { id: x.id, label: x.label, ...r };
+          })
+        );
+        results.push(...rs);
+      }
+      const okCount = results.filter((r) => r.ok).length;
+      log('info', `代理健康检查：${okCount}/${results.length} 可用`);
+      return void sendJson(res, 200, { ok: true, results, okCount, total: results.length });
+    }
+
+    // 给账号绑定/解绑代理
+    if (seg[0] === 'accounts' && seg[1] && seg[2] === 'proxy' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const acc = panel.setAccountProxy(seg[1], body.proxy ?? '');
+      if (!acc) return void sendJson(res, 404, { error: { code: 'not_found', message: '账号或代理不存在' } });
+      return void sendJson(res, 200, { ok: true, account: publicAccount(acc) });
+    }
+
     /* ---- 用量 ---- */
     if (p === '/usage') {
       const range = url.searchParams.get('range') ?? 'today';
@@ -920,12 +992,15 @@ function fallbackMeta({ path, method, url, panel, cfg }) {
         agent_name: 'CodeAgent',
         gpts: {
           models: models.map((m) => ({
-            model_name: m.id,
+            model_name: m.name ?? m.id,
             model_alias: m.alias ?? m.id,
             model_type: 'admin',
             model_parameters: {
+              // CLI 的 eK() 用 model_parameters.model_id 作为模型 id
+              model_id: m.id,
               max_tokens: m.maxTokens ?? null,
               context_window: m.contextWindow ?? null,
+              input_length: m.inputLength ?? null,
               enable_queue: m.queue === true,
               supports_prompt_cache: m.promptCache === true,
             },
@@ -985,18 +1060,31 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
     // 优先用账号池探测到的真实模型；没探测过才退回配置里的静态清单
     const catalog = buildCatalog(panel.state?.accounts ?? []);
     const fromCatalog = catalog.models.map((m) => m.id).filter(Boolean);
-    const list = gw.models ?? (fromCatalog.length ? fromCatalog : (cfg.models ?? []).map((m) => m.model_name).filter(Boolean));
+    // 注意：gw.models 可能是空数组，?? 不会回退，必须判长度
+    const configured = Array.isArray(gw.models) && gw.models.length ? gw.models : null;
+    const list = configured ?? (fromCatalog.length ? fromCatalog : (cfg.models ?? []).map((m) => m.model_name).filter(Boolean));
     return void sendJson(res, 200, {
       object: 'list',
       data: list.map((id) => {
         const m = catalog.models.find((x) => x.id === id);
+        const price = m?.price ?? null;
         return {
           id,
           object: 'model',
           created: Math.floor(Date.now() / 1000),
           owned_by: gw.owner ?? 'codearts',
+          ...(m?.name && m.name !== id ? { display_name: m.name } : {}),
           ...(m?.contextWindow ? { context_window: m.contextWindow } : {}),
           ...(m?.maxTokens ? { max_tokens: m.maxTokens } : {}),
+          // 价格（积分 / 千 token），下游可据此估算成本
+          ...(price?.input != null ? { input_price: price.input } : {}),
+          ...(price?.cache != null ? { cache_price: price.cache } : {}),
+          ...(price?.output != null ? { output_price: price.output } : {}),
+          ...(m?.tiers?.length > 1 ? { price_tiers: m.tiers } : {}),
+          ...(m?.promptCache ? { supports_prompt_cache: true } : {}),
+          ...(m?.queue ? { supports_queue: true } : {}),
+          ...(m?.reasoning ? { supports_reasoning: true } : {}),
+          ...(m?.accounts?.length ? { accounts: m.accounts } : {}),
         };
       }),
     });

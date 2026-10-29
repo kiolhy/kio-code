@@ -38,14 +38,14 @@ const REAL_DETAIL = {
         model_alias: 'GLM-5.2',
         model_name: 'GLM-5.2',
         model_type: 'admin',
-        model_parameters: { max_tokens: 65536, context_window: 202752, enable_queue: true, supports_prompt_cache: true, usage_limit: 0, channel_source: 'codearts' },
+        model_parameters: { model_id: 'GLM-5.2', max_tokens: 65536, context_window: 202752, enable_queue: true, supports_prompt_cache: true, usage_limit: 0, channel_source: 'codearts' },
         credit: [{ input_from: 0, input_to: -1, output_from: 0, output_to: -1, input_price: '8', cache_price: '2', output_price: '28' }],
       },
       {
         model_alias: 'openpangu-2.0-pro',
         model_name: 'OpenPangu-2.0-Pro',
         model_type: 'admin',
-        model_parameters: { max_tokens: 65535, context_window: 524288, enable_queue: true, supports_prompt_cache: true },
+        model_parameters: { model_id: 'OpenPangu-2.0-Pro', max_tokens: 65535, context_window: 524288, enable_queue: true, supports_prompt_cache: true },
         credit: [
           { input_from: 0, input_to: 32000, output_from: 0, output_to: -1, input_price: '3.2', cache_price: '0.8', output_price: '14.5' },
           { input_from: 32001, input_to: -1, output_from: 0, output_to: -1, input_price: '4.8', cache_price: '1.2', output_price: '17.6' },
@@ -55,7 +55,7 @@ const REAL_DETAIL = {
         model_alias: 'deepseek-v4.1-flash',
         model_name: 'DeepSeek-V4.1-Flash',
         model_type: 'admin',
-        model_parameters: { max_tokens: 65536, context_window: 1048576, enable_queue: true, supports_prompt_cache: true },
+        model_parameters: { model_id: 'DeepSeek-V4.1-Flash', max_tokens: 65536, context_window: 1048576, enable_queue: true, supports_prompt_cache: true },
         credit: [{ input_from: 0, input_to: -1, output_from: 0, output_to: -1, input_price: '2', cache_price: '0.2', output_price: '8' }],
       },
     ],
@@ -123,7 +123,8 @@ console.log('\n\x1b[1m[2] 模型解析（真实结构 gpts.models）\x1b[0m');
   const models = parseModels(REAL_DETAIL);
   ok('解析出 3 个模型', models.length === 3, String(models.length));
   const glm = models.find((m) => m.id === 'GLM-5.2');
-  ok('id 用 model_name', glm?.id === 'GLM-5.2');
+  ok('id 用 model_parameters.model_id', glm?.id === 'GLM-5.2');
+  ok('name 用 model_name', glm?.name === 'GLM-5.2', glm?.name);
   ok('alias 用 model_alias', glm?.alias === 'GLM-5.2');
   ok('maxTokens', glm?.maxTokens === 65536, String(glm?.maxTokens));
   ok('contextWindow', glm?.contextWindow === 202752, String(glm?.contextWindow));
@@ -160,8 +161,13 @@ console.log('\n\x1b[1m[4] 真实链路（假服务，真实字段）\x1b[0m');
   ok('选中 primary agent', r.agentId === '9f0e5cb64a104dcfb4aa90dbedab7dcf', r.agentId);
   ok('模型数 3', r.modelCount === 3, String(r.modelCount));
   ok('余额为 null（无 benefit）', r.balanceTotal === null);
-  ok('业务拒绝被单独记录', r.errors.some((e) => e.includes('没有 benefit 套餐')), JSON.stringify(r.errors));
-  ok('错误码带原文', r.errors.some((e) => e.includes('error_code 4000')));
+  // 无 benefit 套餐是账号侧状态，不再写进 errors（避免每次都报一条）
+  ok('无套餐不写进 errors', !r.errors.some((e) => e.includes('benefit') || e.includes('channel')), JSON.stringify(r.errors));
+  ok('benefit 标记为 skipped', r.benefit?.skipped === true, JSON.stringify(r.benefit));
+  ok('benefit 保留错误码原文', r.benefit?.code === '4000', r.benefit?.code);
+  ok('benefit 保留人话说明', String(r.benefit?.message ?? '').includes('channel'), r.benefit?.message);
+  ok('benefit 未启用', r.benefit?.enabled === false);
+  ok('无套餐时不调 claim', r.benefit?.claimed === undefined, String(r.benefit?.claimed));
   ok('记录三处来源', !!r.sources.user && !!r.sources.userAgents && !!r.sources.agentDetail, JSON.stringify(Object.keys(r.sources)));
   ok('原始响应已保存', typeof r.raw.user === 'string' && r.raw.user.includes('domain_id'));
 
@@ -182,7 +188,8 @@ console.log('\n\x1b[1m[5] 异常与降级\x1b[0m');
   const bad = createAccountInfo({ cfg: { accountInfo: { snapAccess: `${base}/nope`, benefitBase: `${base}/nope`, timeoutMs: 5000 } } });
   const r = await bad.probe(account);
   ok('全失败 ok=false', r.ok === false);
-  ok('失败被记录', r.errors.length >= 3, `${r.errors.length} 条`);
+  // benefit 拒绝不再计入 errors，所以这里只剩 snap-access 的两条
+  ok('失败被记录', r.errors.length >= 2, `${r.errors.length} 条`);
   ok('模型数 0', r.modelCount === 0);
 
   let threw = null;
@@ -214,6 +221,9 @@ console.log('\n\x1b[1m[5b] benefit 成功码 "0000" + gateway config 真实结�
         },
       });
     }
+    if (u.pathname === '/api/v1/benefit/claim') {
+      return send({ error_code: '0000', result: { claimed: true, benefit_id: 'B-001', name: '每日免费额度' } });
+    }
     return send({ error_code: 'APIG.0101' });
   });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
@@ -230,6 +240,39 @@ console.log('\n\x1b[1m[5b] benefit 成功码 "0000" + gateway config 真实结�
   ok('benefit 模型带 endpoint', r.models.find((m) => m.id === 'Free-Only-Model')?.endpoint === 'https://benefit-gw.example.com');
   ok('同 id 保留 agent-center 价格', r.models.find((m) => m.id === 'GLM-5.2')?.price.input === 8, String(r.models.find((m) => m.id === 'GLM-5.2')?.price.input));
   ok('模型总数 4', r.modelCount === 4, String(r.modelCount));
+
+  // claim：有 benefit 套餐才会调
+  ok('benefit 标记 enabled', r.benefit?.enabled === true, JSON.stringify(r.benefit));
+  ok('claim 已领取', r.benefit?.claimed === true, String(r.benefit?.claimed));
+  ok('claim 返回结果保留', r.benefit?.claimResult?.benefit_id === 'B-001', JSON.stringify(r.benefit?.claimResult));
+  ok('claim 记录来源', !!r.sources.claim, JSON.stringify(Object.keys(r.sources)));
+  ok('claim 原始响应已存', typeof r.raw.claim === 'string' && r.raw.claim.includes('B-001'), String(r.raw.claim).slice(0, 60));
+  srv.close();
+}
+
+console.log('\n\x1b[1m[5c] claim 失败（每日名额耗尽）\x1b[0m');
+{
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const send = (obj) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    if (u.pathname === '/snap-manager/v1/current/user') return send(REAL_USER);
+    if (u.pathname === '/v1/agent-center/agents/useragents') return send({ total: 1, agents: [{ agent_id: 'A1', agent_name: 'CodeAgent', is_primary_agent: true }] });
+    if (u.pathname === '/v1/agent-center/agents/detail') return send(REAL_DETAIL);
+    if (u.pathname === '/api/v1/user/tokens/balance') return send({ error_code: '0000', result: { remain_tokens: 100 } });
+    if (u.pathname === '/api/v1/gateway/config') return send({ error_code: '0000', result: { endpoint: 'https://x', models: [{ model_id: 'M1', model_name: 'M1' }] } });
+    if (u.pathname === '/api/v1/benefit/claim') return send({ error_code: '4006', error_msg: 'daily claim limit exhausted', result: null });
+    return send({ error_code: 'APIG.0101' });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const b3 = `http://127.0.0.1:${srv.address().port}`;
+  const info = createAccountInfo({ cfg: { accountInfo: { snapAccess: b3, benefitBase: b3, timeoutMs: 8000 } } });
+  const r = await info.probe(account);
+
+  ok('claim 失败 claimed=false', r.benefit?.claimed === false, String(r.benefit?.claimed));
+  ok('claim 错误码 4006', r.benefit?.claimCode === '4006', r.benefit?.claimCode);
+  ok('claim 错误码翻译成中文', String(r.benefit?.claimMessage ?? '').includes('每日名额'), r.benefit?.claimMessage);
+  ok('claim 失败不写进 errors', !r.errors.some((e) => e.includes('claim')), JSON.stringify(r.errors));
+  ok('余额仍然拿到', r.balanceTotal === 100, String(r.balanceTotal));
   srv.close();
 }
 

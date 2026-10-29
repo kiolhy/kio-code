@@ -102,6 +102,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <button data-tab="gateway" class="on">网关与账号</button>
     <button data-tab="usage">数据看板</button>
     <button data-tab="models">模型</button>
+    <button data-tab="proxies">代理</button>
     <button data-tab="agents">智能体配置</button>
     <button data-tab="settings">设置</button>
     <button data-tab="maint">维护</button>
@@ -141,9 +142,9 @@ dialog h4{margin:0 0 14px;font-size:14px}
       <div id="oauthBox" style="display:none;margin-bottom:12px"></div>
       <table>
         <thead><tr>
-          <th>名称</th><th>区域</th><th>类型</th><th>AccessKey</th><th>状态</th><th>过期</th><th>最近使用</th><th class="num">操作</th>
+          <th>名称</th><th>区域</th><th>类型</th><th>AccessKey</th><th>状态</th><th>代理</th><th>过期</th><th>最近使用</th><th class="num">操作</th>
         </tr></thead>
-        <tbody id="accBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+        <tbody id="accBody"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
       </table>
     </div>
 
@@ -178,31 +179,31 @@ dialog h4{margin:0 0 14px;font-size:14px}
 
     <h3>模型用量</h3>
     <div class="card"><table>
-      <thead><tr><th>模型</th><th class="num">请求</th><th class="num">输入 Token</th><th class="num">缓存命中</th><th class="num">缓存比例</th><th class="num">输出 Token</th><th class="num">合计</th><th>占比</th></tr></thead>
-      <tbody id="modelBody"><tr><td colspan="8" class="empty">暂无数据</td></tr></tbody>
+      <thead><tr><th>模型</th><th class="num">请求</th><th class="num">输入 Token</th><th class="num">缓存命中</th><th class="num">缓存比例</th><th class="num">输出 Token</th><th class="num">合计</th><th class="num">积分</th><th>占比</th></tr></thead>
+      <tbody id="modelBody"><tr><td colspan="9" class="empty">暂无数据</td></tr></tbody>
     </table></div>
 
     <div class="grid g2">
       <div>
         <h3>账号用量</h3>
         <div class="card"><table>
-          <thead><tr><th>账号</th><th class="num">请求</th><th class="num">Token</th><th class="num">缓存比例</th></tr></thead>
-          <tbody id="accUsageBody"><tr><td colspan="4" class="empty">暂无数据</td></tr></tbody>
+          <thead><tr><th>账号</th><th class="num">请求</th><th class="num">Token</th><th class="num">缓存比例</th><th class="num">积分</th></tr></thead>
+          <tbody id="accUsageBody"><tr><td colspan="5" class="empty">暂无数据</td></tr></tbody>
         </table></div>
       </div>
       <div>
         <h3>Key 用量</h3>
         <div class="card"><table>
-          <thead><tr><th>Key</th><th class="num">请求</th><th class="num">Token</th><th class="num">缓存比例</th></tr></thead>
-          <tbody id="keyUsageBody"><tr><td colspan="4" class="empty">暂无数据</td></tr></tbody>
+          <thead><tr><th>Key</th><th class="num">请求</th><th class="num">Token</th><th class="num">缓存比例</th><th class="num">积分</th></tr></thead>
+          <tbody id="keyUsageBody"><tr><td colspan="5" class="empty">暂无数据</td></tr></tbody>
         </table></div>
       </div>
     </div>
 
     <h3>请求流水</h3>
     <div class="card"><table>
-      <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">Token</th><th class="num">缓存</th></tr></thead>
-      <tbody id="usageRecent"><tr><td colspan="8" class="empty">暂无数据</td></tr></tbody>
+      <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">Token</th><th class="num">缓存</th><th class="num">积分</th></tr></thead>
+      <tbody id="usageRecent"><tr><td colspan="9" class="empty">暂无数据</td></tr></tbody>
     </table></div>
   </section>
 
@@ -229,7 +230,38 @@ dialog h4{margin:0 0 14px;font-size:14px}
     </table></div>
   </section>
 
-  <!-- ============ 智能体配置 ============ -->
+  <!-- ============ 代理池 ============ -->
+  <section class="page" id="page-proxies">
+    <div class="row">
+      <h2 style="margin:0">代理池</h2>
+      <span class="spacer"></span>
+      <button onclick="checkAllProxies(this)">全部检测</button>
+      <button onclick="loadProxies()">刷新</button>
+    </div>
+    <div class="hint" id="proxiesHint" style="margin:10px 0"></div>
+
+    <div class="card">
+      <h3 style="margin-top:0">批量添加</h3>
+      <div class="hint" style="margin-bottom:8px">
+        一行一个，支持 <span class="mono">http://host:port</span>、<span class="mono">socks5://user:pass@host:port</span>、
+        <span class="mono">host:port</span>、<span class="mono">host:port:user:pass</span>；<span class="mono">#</span> 开头为注释，自动去重。
+      </div>
+      <textarea id="proxyText" rows="6" placeholder="http://1.2.3.4:8080
+socks5://user:pass@5.6.7.8:1080
+9.9.9.9:3128:admin:secret" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" onclick="addProxies(this)">添加</button>
+        <span class="hint" id="proxyAddHint"></span>
+      </div>
+    </div>
+
+    <div class="card"><table>
+      <thead><tr>
+        <th>代理</th><th>协议</th><th>认证</th><th>状态</th><th>最近检测</th><th>使用账号</th><th class="num">操作</th>
+      </tr></thead>
+      <tbody id="proxiesBody"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+    </table></div>
+  </section>
   <section class="page" id="page-agents">
     <h2>智能体接入</h2>
     <div class="card">
@@ -459,6 +491,16 @@ const fmtTok = (n) => {
   if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
   return String(n);
 };
+// 积分：单次消耗通常很小，按量级选小数位
+const fmtCredit = (n) => {
+  if (n == null || !Number.isFinite(Number(n))) return '<span class="muted">—</span>';
+  const v = Number(n);
+  if (v === 0) return '0';
+  if (v >= 1000) return fmt(Math.round(v));
+  if (v >= 10) return v.toFixed(2);
+  if (v >= 0.1) return v.toFixed(3);
+  return v.toFixed(4);
+};
 const ago = (iso) => {
   if (!iso) return '—';
   const d = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -490,6 +532,7 @@ async function api(path, opts = {}) {
 
 /* ---------------- 页签 ---------------- */
 let currentTab = 'gateway';
+let proxyCache = [];
 document.querySelectorAll('#nav button').forEach((b) => {
   b.addEventListener('click', () => showTab(b.dataset.tab));
 });
@@ -499,6 +542,7 @@ function showTab(tab) {
   document.querySelectorAll('.page').forEach((p) => p.classList.toggle('on', p.id === 'page-' + tab));
   if (tab === 'usage') loadUsage();
   if (tab === 'models') loadModels();
+  if (tab === 'proxies') loadProxies();
   if (tab === 'logs') loadLogs();
   if (tab === 'settings') loadSettings();
   if (tab === 'maint') loadMaint();
@@ -537,6 +581,11 @@ async function loadAccounts() {
   try {
     const j = await api('/accounts');
     const rows = j.accounts ?? [];
+    // 代理列表（账号行的代理下拉要用）
+    try {
+      const px = await api('/proxies');
+      proxyCache = px.proxies ?? [];
+    } catch { /* 代理接口失败不影响账号列表 */ }
     // 账号维度的缓存比例（来自用量聚合，按账号名对齐）
     const cacheBy = {};
     try {
@@ -547,7 +596,7 @@ async function loadAccounts() {
       ? `${rows.filter(a => a.enabled).length} 个启用 / 共 ${rows.length} 个`
       : '';
     if (!rows.length) {
-      $('accBody').innerHTML = '<tr><td colspan="8" class="empty">还没有账号，点「+ 添加账号」导入凭据</td></tr>';
+      $('accBody').innerHTML = '<tr><td colspan="9" class="empty">还没有账号，点「+ 添加账号」导入凭据</td></tr>';
       return;
     }
     $('accBody').innerHTML = rows.map((a) => {
@@ -561,12 +610,22 @@ async function loadAccounts() {
       const chipLine = chips.length
         ? `<div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">${chips.join('')}</div>`
         : '';
+      // 代理选择器：账号可以绑定代理池里的某个代理
+      const proxyOpts = ['<option value="">不使用代理</option>']
+        .concat(proxyCache.map((p) => {
+          const sel = (a.proxy === p.url || a.proxy === p.id) ? ' selected' : '';
+          const mark = p.lastCheckOk === false ? ' ✗' : p.lastCheckOk === true ? ' ✓' : '';
+          return `<option value="${esc(p.id)}"${sel}>${esc(p.label)}${mark}</option>`;
+        }))
+        .join('');
+      const proxyCell = `<select class="sm" style="max-width:150px" onchange="setAccProxy('${a.id}', this.value)">${proxyOpts}</select>`;
       return `<tr>
         <td><strong>${esc(a.name)}</strong>${a.note ? '<div class="hint">' + esc(a.note) + '</div>' : ''}${chipLine}</td>
-        <td>${a.region === 'intl' ? '🌐 国际' : '🇨🇳 国内'}${a.proxy ? ' <span class="pill ok">代理</span>' : ''}</td>
+        <td>${a.region === 'intl' ? '🌐 国际' : '🇨🇳 国内'}</td>
         <td class="mono">${esc(a.authType)}</td>
         <td class="mono">${esc(a.accessKeyIdMasked)}</td>
         <td>${st}</td>
+        <td>${proxyCell}</td>
         <td class="muted">${a.expiresAt ? new Date(a.expiresAt).toLocaleString('zh-CN') : '—'}</td>
         <td class="muted">${ago(a.lastUsedAt)}</td>
         <td class="num">
@@ -755,18 +814,23 @@ function renderAccountInfo(info) {
     ? `<div class="hint mono">${esc(user.userName ?? '')} · ${esc(user.domainName ?? '')}</div>`
     : '';
 
+  // 剩余积分：只有账号真的开通 benefit 套餐才显示；没开通就整块隐藏（不当错误提示）
+  const hasBenefit = info.benefit?.enabled === true;
   const balTable = bal
     ? `<table><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
       Object.entries(bal).map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num">${fmt(v)}</td></tr>`).join('') +
       '</tbody></table>'
-    : (() => {
+    : '';
+
+  // 免费权益领取状态（claim）
+  const claimRow = hasBenefit
+    ? (() => {
         const b = info.benefit ?? {};
-        const why = b.message
-          ? `<div class="hint">${esc(b.message)}${b.code ? `（error_code ${esc(b.code)}）` : ''}</div>`
-          : '<div class="hint">该账号没有 benefit 套餐，余额接口返回业务拒绝（模型与价格不受影响）</div>';
-        return `<div class="hint" style="color:#d29922;margin-bottom:6px">余额不可用 —— 这是账号侧的套餐状态，不是鉴权失败</div>${why}
-          <div class="hint" style="margin-top:6px">签名已通过（HTTP 200 进到业务层），模型与价格照常可用。</div>`;
-      })();
+        if (b.claimed) return '<span class="pill ok">已领取</span>';
+        if (b.claimCode) return `<span class="pill err">未领取</span> <span class="hint">${esc(b.claimMessage ?? '')}（${esc(b.claimCode)}）</span>`;
+        return '<span class="pill">未尝试</span>';
+      })()
+    : '';
 
   const rawKeys = Object.keys(info.raw ?? {});
   const rawBlock = rawKeys.length
@@ -787,11 +851,14 @@ function renderAccountInfo(info) {
     <div class="grid g3" style="margin-bottom:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
       <div class="kpi"><div class="label">可用模型</div><div class="value">${info.modelCount ?? models.length}</div><div class="sub">${esc(info.checkedAt ?? '')}</div></div>
       <div class="kpi"><div class="label">智能体</div><div class="value">${info.agentCount ?? 0}</div><div class="sub">${esc(String(info.agentId ?? '').slice(0, 12))}…</div></div>
-      <div class="kpi"><div class="label">剩余积分</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">${info.benefit?.enabled ? 'benefit 套餐已开通' : '未开通 benefit 套餐'}</div></div>
+      ${hasBenefit
+        ? `<div class="kpi"><div class="label">剩余积分</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">benefit 套餐</div></div>`
+        : ''}
     </div>
     ${userLine}
     <h4 style="margin-top:14px">可用模型与价格</h4>${mtable}
-    <h4 style="margin-top:16px">剩余积分</h4>${balTable}
+    ${hasBenefit ? `<h4 style="margin-top:16px">剩余积分</h4>${balTable}` : ''}
+    ${hasBenefit ? `<h4 style="margin-top:16px">免费权益</h4><div>${claimRow}</div>` : ''}
     ${src ? `<h4 style="margin-top:16px">数据来源</h4>${src}` : ''}
     ${rawBlock}
     ${errs}`;
@@ -858,6 +925,111 @@ async function refreshModels(btn) {
     loadAccounts();
   } catch (e) { toast(e.message, true); }
   finally { if (btn) { btn.disabled = false; btn.textContent = '重新探测全部账号'; } }
+}
+
+/* ---------------- 代理池 ---------------- */
+async function loadProxies() {
+  try {
+    const j = await api('/proxies');
+    proxyCache = j.proxies ?? [];
+    const okN = proxyCache.filter((p) => p.lastCheckOk === true).length;
+    const badN = proxyCache.filter((p) => p.lastCheckOk === false).length;
+    $('proxiesHint').textContent = proxyCache.length
+      ? `共 ${proxyCache.length} 个代理` + (okN ? ` · 可用 ${okN}` : '') + (badN ? ` · 不可用 ${badN}` : '')
+      : '还没有代理，用上面的文本框批量添加';
+
+    $('proxiesBody').innerHTML = proxyCache.length
+      ? proxyCache.map((p) => {
+          const st = p.lastCheckOk === true
+            ? '<span class="pill ok">可用</span>'
+            : p.lastCheckOk === false
+              ? '<span class="pill bad">不可用</span>'
+              : '<span class="pill">未检测</span>';
+          const when = p.lastCheckAt ? new Date(p.lastCheckAt).toLocaleString('zh-CN') : '—';
+          return `<tr>
+            <td class="mono">${esc(p.maskedUrl)}${p.label && p.label !== p.host + ':' + p.port ? `<div class="hint">${esc(p.label)}</div>` : ''}</td>
+            <td>${esc(p.protocol)}</td>
+            <td>${p.hasAuth ? `<span class="pill">${esc(p.username)}</span>` : '<span class="muted">无</span>'}</td>
+            <td>${st}${p.lastCheckOk === false && p.lastError ? `<div class="hint" style="color:#f85149">${esc(String(p.lastError).slice(0, 60))}</div>` : ''}${p.lastCheckMs != null ? `<div class="hint">${p.lastCheckMs}ms</div>` : ''}</td>
+            <td class="muted">${esc(when)}</td>
+            <td class="hint">${p.usedBy?.length ? esc(p.usedBy.join('、')) : '<span class="muted">未使用</span>'}</td>
+            <td class="num">
+              <button class="sm" onclick="checkProxyOne('${p.id}', this)">检测</button>
+              <button class="sm" onclick="toggleProxy('${p.id}', ${p.enabled ? 'false' : 'true'})">${p.enabled ? '停用' : '启用'}</button>
+              <button class="sm danger" onclick="delProxy('${p.id}')">删除</button>
+            </td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="7" class="empty">暂无代理</td></tr>';
+  } catch (e) { toast(e.message, true); }
+}
+
+async function addProxies(btn) {
+  const text = $('proxyText').value.trim();
+  if (!text) return toast('请输入代理地址', true);
+  if (btn) { btn.disabled = true; btn.textContent = '添加中…'; }
+  try {
+    const j = await api('/proxies', { method: 'POST', body: JSON.stringify({ text }) });
+    const parts = [`新增 ${j.added.length}`];
+    if (j.skipped?.length) parts.push(`跳过重复 ${j.skipped.length}`);
+    if (j.errors?.length) parts.push(`失败 ${j.errors.length}`);
+    $('proxyAddHint').textContent = parts.join('，');
+    if (j.errors?.length) {
+      $('proxyAddHint').innerHTML = parts.join('，') + '：' + j.errors.map((e) => `<div class="mono" style="color:#f85149">第 ${e.line} 行 ${esc(e.error)}</div>`).join('');
+    }
+    if (j.added.length) { $('proxyText').value = ''; toast(`已添加 ${j.added.length} 个代理`); }
+    else if (!j.errors?.length) toast('没有新的代理（都重复了）');
+    loadProxies();
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '添加'; } }
+}
+
+async function checkProxyOne(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '检测中…'; }
+  try {
+    const j = await api('/proxies/check', { method: 'POST', body: JSON.stringify({ id }) });
+    const r = j.results?.[0];
+    toast(r?.ok ? `可用（${r.durMs}ms）` : `不可用：${r?.error ?? '未知错误'}`, !r?.ok);
+    loadProxies();
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '检测'; } }
+}
+
+async function checkAllProxies(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '检测中…'; }
+  try {
+    const j = await api('/proxies/check', { method: 'POST', body: '{}' });
+    toast(`检测完成：可用 ${j.okCount}/${j.total}`);
+    loadProxies();
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '全部检测'; } }
+}
+
+async function toggleProxy(id, enabled) {
+  try {
+    await api('/proxies/' + id, { method: 'PATCH', body: JSON.stringify({ enabled }) });
+    loadProxies();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function delProxy(id) {
+  if (!confirm('删除这个代理？绑定了它的账号会自动解绑。')) return;
+  try {
+    await api('/proxies/' + id, { method: 'DELETE' });
+    toast('已删除');
+    loadProxies();
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+
+/** 给账号选代理（账号行上的下拉） */
+async function setAccProxy(accountId, proxyId) {
+  try {
+    await api(`/accounts/${accountId}/proxy`, { method: 'POST', body: JSON.stringify({ proxy: proxyId }) });
+    toast(proxyId ? '已绑定代理' : '已解绑代理');
+    loadAccounts();
+    loadProxies();
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ---------------- 导入原版 CLI 的 auth.json ---------------- */
@@ -984,8 +1156,10 @@ async function loadUsage() {
     const k = j.kpi;
     $('usageKpi').innerHTML = [
       ['请求数', fmt(k.requests), k.errors ? k.errors + ' 个错误' : '无错误'],
+      ['积分消耗', fmtCredit(k.credit), k.creditUnknown ? `${k.creditUnknown} 条无价格` : '按模型真实价格'],
       ['输入 Token', fmtTok(k.promptTokens), '合计 ' + fmtTok(k.totalTokens)],
       ['缓存命中', k.cachePct == null ? '—' : k.cachePct + '%', '命中 ' + fmtTok(k.cachedTokens) + ' / 输入 ' + fmtTok(k.promptTokens) + (k.cacheWriteTokens ? ' · 写入 ' + fmtTok(k.cacheWriteTokens) : '')],
+      ['缓存省下', fmtCredit(k.creditSaved), '相比全部按原价'],
       ['输出 Token', fmtTok(k.completionTokens), j.range],
       ['平均耗时', k.avgDurMs + ' ms', j.range],
     ].map(([l, v, s]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('');
@@ -1001,13 +1175,14 @@ async function loadUsage() {
           <td class="num">${pct(m.cachePct)}</td>
           <td class="num">${fmtTok(m.completionTokens)}</td>
           <td class="num">${fmtTok(m.totalTokens)}</td>
+          <td class="num">${fmtCredit(m.credit)}${m.creditPerKTok != null ? `<div class="sub muted">${m.creditPerKTok}/千</div>` : ''}</td>
           <td><div class="bar"><i style="width:${Math.round(m.totalTokens/total*100)}%"></i></div></td>
         </tr>`).join('')
-      : '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
+      : '<tr><td colspan="9" class="empty">暂无数据</td></tr>';
 
-    const mini = (rows, cols) => rows.length
-      ? rows.map((r) => `<tr><td class="mono">${esc(r.name)}</td><td class="num">${fmt(r.requests)}</td><td class="num">${fmtTok(r.totalTokens)}</td><td class="num">${pct(r.cachePct)}</td></tr>`).join('')
-      : `<tr><td colspan="4" class="empty">暂无数据</td></tr>`;
+    const mini = (rows) => rows.length
+      ? rows.map((r) => `<tr><td class="mono">${esc(r.name)}</td><td class="num">${fmt(r.requests)}</td><td class="num">${fmtTok(r.totalTokens)}</td><td class="num">${pct(r.cachePct)}</td><td class="num">${fmtCredit(r.credit)}</td></tr>`).join('')
+      : `<tr><td colspan="5" class="empty">暂无数据</td></tr>`;
     $('accUsageBody').innerHTML = mini(j.accounts ?? []);
     $('keyUsageBody').innerHTML = mini(j.keys ?? []);
 
@@ -1021,8 +1196,9 @@ async function loadUsage() {
           <td class="num">${r.durMs} ms</td>
           <td class="num">${fmtTok(r.promptTokens + r.completionTokens)}</td>
           <td class="num">${pct(r.cachePct)}${r.cachedTokens ? `<div class="sub muted">${fmtTok(r.cachedTokens)}</div>` : ''}</td>
+          <td class="num">${fmtCredit(r.credit)}</td>
         </tr>`).join('')
-      : '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
+      : '<tr><td colspan="9" class="empty">暂无数据</td></tr>';
   } catch (e) { toast(e.message, true); }
 }
 
