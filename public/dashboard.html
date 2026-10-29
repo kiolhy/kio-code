@@ -265,6 +265,38 @@ dialog h4{margin:0 0 14px;font-size:14px}
       <button class="primary" onclick="saveSettings()">保存</button>
     </div>
 
+    <h3>账号授权添加</h3>
+    <div class="card">
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input id="setOauthOn" type="checkbox" style="width:auto">
+          <span>开启「OAuth 授权添加」（账号池里用登录链接添加账号）</span>
+        </label>
+      </div>
+      <div class="grid g2" style="margin-top:12px">
+        <div class="field"><label>授权模式</label>
+          <select id="setOauthMode">
+            <option value="codearts">codearts — 码道真实登录（推荐，走真实华为云端点）</option>
+            <option value="sts">sts — 通用 OAuth 授权码 → STS</option>
+            <option value="token">token — 直接换 access_token</option>
+            <option value="codearts-cli">codearts-cli — 设备码模式</option>
+          </select>
+        </div>
+        <div class="field"><label>自动续期</label>
+          <select id="setOauthRefresh">
+            <option value="1">开启（过期前自动换新凭据）</option>
+            <option value="0">关闭</option>
+          </select>
+        </div>
+      </div>
+      <button class="primary" onclick="saveOauthSettings()">保存授权设置</button>
+      <div class="hint">
+        立即生效，不用重启。当前生效状态：<span id="oauthEff" class="mono">—</span><br>
+        选 <span class="mono">codearts</span> 时无需任何华为云侧配置：点「授权添加」会打开真实授权页
+        <span class="mono">codearts.huaweicloud.com/portal/authorize</span>，登录后自动换 STS 临时凭据入库。
+      </div>
+    </div>
+
     <h3>数据落盘</h3>
     <div class="card">
       <pre id="pathsBox"></pre>
@@ -758,12 +790,35 @@ async function loadSettings() {
     $('setTimeout').value = j.settings.requestTimeoutMs ?? 120000;
     $('setLogLevel').value = j.settings.logLevel ?? 'INFO';
     $('setEnforce').checked = j.settings.enforceKeys === true;
+    const eff = j.effective ?? { enabled: false, mode: 'sts' };
+    $('setOauthOn').checked = eff.enabled === true;
+    $('setOauthMode').value = eff.mode ?? 'sts';
+    $('setOauthRefresh').value = (j.settings?.oauth?.refreshEnabled === false) ? '0' : '1';
+    $('oauthEff').textContent = `${eff.enabled ? '已开启' : '未开启'} · mode=${eff.mode}`;
     $('pathsBox').textContent =
 `配置   data/settings.json
 用量   data/usage.jsonl
 流水   data/requests.jsonl
 遥测   data/telemetry.jsonl
 凭据   data/credentials.json`;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function saveOauthSettings() {
+  try {
+    const j = await api('/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        oauth: {
+          enabled: $('setOauthOn').checked,
+          mode: $('setOauthMode').value,
+          refreshEnabled: $('setOauthRefresh').value === '1',
+        },
+      }),
+    });
+    const eff = j.effective ?? {};
+    $('oauthEff').textContent = `${eff.enabled ? '已开启' : '未开启'} · mode=${eff.mode}`;
+    toast('授权设置已保存（立即生效）');
   } catch (e) { toast(e.message, true); }
 }
 

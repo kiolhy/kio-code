@@ -222,7 +222,35 @@ console.log('\n\x1b[1m[5] 在线更新与 GitHub 状态\x1b[0m');
   ok('续期未知账号 404', rf.status === 404, String(rf.status));
 }
 
-console.log('\n\x1b[1m[6] 设置与清理\x1b[0m');
+console.log('\n\x1b[1m[6] 授权添加开关（面板设置里开启）\x1b[0m');
+{
+  const s0 = await req('/panel/api/settings', { headers: H });
+  ok('settings 暴露生效状态', !!s0.body?.effective && typeof s0.body.effective.enabled === 'boolean', JSON.stringify(s0.body?.effective));
+  ok('settings 暴露可选模式', Array.isArray(s0.body?.modes) && s0.body.modes.includes('codearts'), JSON.stringify(s0.body?.modes));
+
+  const bad = await req('/panel/api/settings', { method: 'PATCH', headers: H, body: JSON.stringify({ oauth: { mode: 'bogus' } }) });
+  ok('非法模式被拒', bad.status === 400 && bad.body?.error?.code === 'bad_oauth_mode', `${bad.status}/${bad.body?.error?.code}`);
+
+  const badR = await req('/panel/api/settings', { method: 'PATCH', headers: H, body: JSON.stringify({ oauth: { refreshEnabled: 'yes' } }) });
+  ok('非法续期开关被拒', badR.status === 400 && badR.body?.error?.code === 'bad_oauth_refresh', `${badR.status}/${badR.body?.error?.code}`);
+
+  const off = await req('/panel/api/settings', { method: 'PATCH', headers: H, body: JSON.stringify({ oauth: { enabled: false, mode: 'codearts' } }) });
+  ok('面板里关闭授权添加', off.status === 200 && off.body?.effective?.enabled === false, JSON.stringify(off.body?.effective));
+
+  const blocked = await req('/panel/api/oauth/start', { method: 'POST', headers: H, body: '{}' });
+  ok('关闭后授权入口 409', blocked.status === 409 && blocked.body?.error?.code === 'oauth_disabled', String(blocked.status));
+
+  const on = await req('/panel/api/settings', { method: 'PATCH', headers: H, body: JSON.stringify({ oauth: { enabled: true, mode: 'codearts' } }) });
+  ok('面板里重新开启', on.status === 200 && on.body?.effective?.enabled === true, JSON.stringify(on.body?.effective));
+
+  const allowed = await req('/panel/api/oauth/start', { method: 'POST', headers: H, body: '{}' });
+  const au = String(allowed.body?.authorizeUrl ?? '');
+  ok('开启后授权入口 200', allowed.status === 200, String(allowed.status));
+  ok('拿到真实授权链接', au.includes('codearts.huaweicloud.com/portal/authorize'), au.slice(0, 60));
+  ok('链接带 client_id=CodeArts_Tui', au.includes('client_id=CodeArts_Tui'));
+}
+
+console.log('\n\x1b[1m[7] 设置与清理\x1b[0m');
 {
   const s = await req('/panel/api/settings', { headers: H });
   ok('settings 200', s.status === 200);

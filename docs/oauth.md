@@ -76,6 +76,22 @@
 
 > 委托授权本质是「把 OAuth 身份映射到一套临时 AK/SK」。没有委托关系，登录链接只能拿到身份 token，变不出 AK/SK。
 
+## 开关：面板「设置 → 账号授权添加」
+
+不用改配置文件、不用重启：面板「设置」页有「账号授权添加」一栏，勾上开关选好模式保存即可，**立即生效**。
+
+| 设置项 | 作用 |
+|---|---|
+| 开启开关 | 等价于 `oauth.enabled`；关掉后点「授权添加」返回 409 `oauth_disabled` |
+| 授权模式 | `codearts`（推荐，真实登录）/ `sts` / `token` / `codearts-cli` |
+| 自动续期 | 等价于 `oauth.refresh.enabled` |
+
+优先级：**面板设置 > config.json**。面板里 `oauth.enabled` 存 `null` 表示「跟随配置文件」，存 `true/false`
+则以面板为准（写进 `data/settings.json`）。`mode=codearts` 时即使配置文件没写 `enabled: true` 也视为开启。
+
+接口：`GET /panel/api/settings` 返回 `effective: { enabled, mode }` 与 `modes`；`PATCH /panel/api/settings`
+带 `{ "oauth": { "enabled": true, "mode": "codearts", "refreshEnabled": true } }`，非法 `mode` 返回 400 `bad_oauth_mode`。
+
 ## 码道真实登录协议（`mode: "codearts"`，走真实网络）
 
 从 `agentkernel.exe`（Bun 编译产物）反编译还原的 auth 模块，**不是模拟**，端点/参数全部是真实值：

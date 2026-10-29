@@ -480,13 +480,31 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       return void sendJson(res, 200, {
         ok: true,
         settings: panel.settings(),
+        effective: effectiveOauth(),
+        modes: OAUTH_MODES,
         panel: { passwordChanged: panel.passwordChanged() },
       });
     }
 
     if (p === '/settings' && method === 'PATCH') {
       const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
-      return void sendJson(res, 200, { ok: true, settings: panel.updateSettings(body) });
+      if (body.oauth && typeof body.oauth === 'object') {
+        const o = body.oauth;
+        if (o.mode != null && !OAUTH_MODES.includes(o.mode)) {
+          return void sendJson(res, 400, {
+            error: { code: 'bad_oauth_mode', message: `oauth.mode 只能是 ${OAUTH_MODES.join(' / ')}` },
+          });
+        }
+        if (o.enabled != null && typeof o.enabled !== 'boolean') {
+          return void sendJson(res, 400, { error: { code: 'bad_oauth_enabled', message: 'oauth.enabled 只能是 true / false / null' } });
+        }
+        if (o.refreshEnabled != null && typeof o.refreshEnabled !== 'boolean') {
+          return void sendJson(res, 400, { error: { code: 'bad_oauth_refresh', message: 'oauth.refreshEnabled 只能是 true / false' } });
+        }
+      }
+      const settings = panel.updateSettings(body);
+      syncOauthCfg();
+      return void sendJson(res, 200, { ok: true, settings, effective: effectiveOauth() });
     }
 
     /* ---- 在线更新 / GitHub 授权 ---- */
@@ -566,7 +584,16 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
     /* ---- 账号池 OAuth 授权添加 ---- */
     if (p === '/oauth/start' && method === 'POST') {
       const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
-      if ((cfg.oauth?.mode ?? 'sts') === 'codearts') {
+      const eff = syncOauthCfg();
+      if (!eff.enabled) {
+        return void sendJson(res, 409, {
+          error: {
+            code: 'oauth_disabled',
+            message: '账号授权添加未开启：到「设置 → 账号授权添加」里打开开关即可（立即生效，不用重启）',
+          },
+        });
+      }
+      if (eff.mode === 'codearts') {
         const r = codeartsAuth.start({ callbackPort: Number(body.callbackPort) || cfg.port, locale: body.locale });
         return void sendJson(res, 200, { ok: true, mode: 'codearts', ...r });
       }
@@ -576,6 +603,13 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
 
     if (p === '/oauth/complete' && method === 'POST') {
       const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const eff = syncOauthCfg();
+      if (!eff.enabled) {
+        return void sendJson(res, 409, { error: { code: 'oauth_disabled', message: '账号授权添加未开启' } });
+      }
+      if (eff.mode !== 'codearts') {
+        return void sendJson(res, 400, { error: { code: 'not_codearts_mode', message: `当前授权模式是 ${eff.mode}，该接口只用于 codearts 模式` } });
+      }
       const r = await codeartsAuth.completeFromUrl({
         url: body.url,
         ticketId: body.ticketId,
@@ -592,10 +626,9 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
 
     if (p === '/oauth/status' && method === 'GET') {
       const state = url.searchParams.get('state');
-      if ((cfg.oauth?.mode ?? 'sts') === 'codearts') {
-        return void sendJson(res, 200, { ok: true, ...codeartsAuth.status({ ticketId: state }) });
-      }
-      return void sendJson(res, 200, { ok: true, ...oauth.status({ state }) });
+      const eff = syncOauthCfg();
+      const inner = eff.mode === 'codearts' ? codeartsAuth.status({ ticketId: state }) : oauth.status({ state });
+      return void sendJson(res, 200, { ok: true, ...inner, enabled: eff.enabled, mode: eff.mode });
     }
 
     if (p === '/accounts/import-auth' && method === 'POST') {
@@ -883,6 +916,42 @@ function publicAccountSafe(acc) {
   return publicAccount(acc);
 }
 
+const OAUTH_MODES = ['sts', 'token', 'codearts', 'codearts-cli'];
+
+// config.json 里的原始值快照：面板设置是覆盖层，取消覆盖后要能回落到配置文件的真实值
+let cfgOauthBase = null;
+function oauthBase() {
+  if (!cfgOauthBase) {
+    cfgOauthBase = { enabled: cfg.oauth?.enabled === true, mode: cfg.oauth?.mode ?? 'sts' };
+  }
+  return cfgOauthBase;
+}
+
+/**
+ * 授权添加是否开启：面板设置优先，其次 config.json。
+ * 面板里 oauth.enabled 为 null 时跟随配置文件；mode=codearts 视为开启（真实登录无需额外配置）。
+ */
+function effectiveOauth() {
+  const s = panel.settings()?.oauth ?? {};
+  const base = oauthBase();
+  const mode = s.mode ?? base.mode;
+  const enabled = s.enabled ?? (base.enabled === true || mode === 'codearts');
+  return { enabled: enabled === true, mode };
+}
+
+/** 把生效值写回 cfg.oauth（oauth.mjs 持有同一对象引用，改完立即生效，不用重启） */
+function syncOauthCfg() {
+  const e = effectiveOauth();
+  if (!cfg.oauth) cfg.oauth = {};
+  cfg.oauth.enabled = e.enabled;
+  cfg.oauth.mode = e.mode;
+  const s = panel.settings()?.oauth ?? {};
+  if (typeof s.refreshEnabled === 'boolean') {
+    cfg.oauth.refresh = { ...(cfg.oauth.refresh ?? {}), enabled: s.refreshEnabled };
+  }
+  return e;
+}
+
 
 /* ------------------------------------------------------------------ */
 /* 凭证捕获                                                            */
@@ -963,7 +1032,8 @@ const requestHandler = async (req, res) => {
     const state = url.searchParams.get('state');
     try {
       let r;
-      if ((cfg.oauth?.mode ?? 'sts') === 'codearts' && (code || url.searchParams.get('secret'))) {
+      const eff = syncOauthCfg();
+      if (eff.mode === 'codearts' && (code || url.searchParams.get('secret'))) {
         r = await codeartsAuth.completeFromUrl({
           url: url.toString(),
           ticketId: url.searchParams.get('ticket_id') ?? state,
@@ -1731,6 +1801,8 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`  当前模式   ${cfg.mode}${cfg.mode === 'proxy' ? ` → ${cfg.upstream.baseUrl}` : ''}`);
   console.log(`  版本       ${BUILD.version} (${shortSha(BUILD.sha)}, ${BUILD.source})`);
   console.log(`  数据目录   ${DATA_DIR}`);
+  const eff = effectiveOauth();
+  console.log(`  授权添加   ${eff.enabled ? `已开启（mode=${eff.mode}）` : '未开启（面板「设置 → 账号授权添加」里可开启，或改 config.json 的 oauth 段）'}`);
   console.log('');
   console.log('  让码道 CLI 指向这里（PowerShell）：');
   console.log(`    $env:INFERHUB_BASE_URLS = "${base}/api/v2/"`);
@@ -1753,12 +1825,15 @@ if (cfg.update?.enabled !== false && autoCheckMs > 0) {
 }
 
 /* 定时续期码道 STS 账号：过期前用 refresh_token + dpop 自动换新，不用重新登录 */
-const refreshCfg = cfg.oauth?.refresh ?? {};
-if ((cfg.oauth?.mode ?? 'sts') === 'codearts' && refreshCfg.enabled !== false) {
-  const checkMs = Number(refreshCfg.checkMs ?? 300000);
-  const leadMs = Number(refreshCfg.leadMs ?? 900000);
+{
+  const checkMs = Number(cfg.oauth?.refresh?.checkMs ?? 300000);
+  const leadMs = Number(cfg.oauth?.refresh?.leadMs ?? 900000);
   if (checkMs > 0) {
     const timer = setInterval(() => {
+      // 每次现读生效配置：面板里改开关/模式后立即跟着变
+      const eff = effectiveOauth();
+      if (!eff.enabled || eff.mode !== 'codearts') return;
+      if (cfg.oauth?.refresh?.enabled === false) return;
       codeartsAuth
         .refreshExpiring({ leadMs })
         .then((r) => {

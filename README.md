@@ -485,6 +485,7 @@ data/
 `codearts.huaweicloud.com/portal/authorize` + PKCE + DPoP → `sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens`）、
 `📥 导入 auth.json`（直接贴原版 CLI 登录产物）。上游要的是 SDK 签名、SK 是静态密钥，所以只能走 OAuth → STS 拿临时凭据。
 码道 OAuth 账号支持**自动续期**：`refresh_token + dpop` 在过期前换新，不用重新登录。
+开关在面板「设置 → 账号授权添加」（勾选 + 选模式 + 保存，立即生效，不用改 config.json 也不用重启）。
 详见 [docs/oauth.md](docs/oauth.md)。
 
 ---
