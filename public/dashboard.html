@@ -393,7 +393,7 @@ async function loadAccounts() {
         : '<span class="pill ok">可用</span>';
       return `<tr>
         <td><strong>${esc(a.name)}</strong>${a.note ? '<div class="hint">' + esc(a.note) + '</div>' : ''}</td>
-        <td>${a.region === 'intl' ? '🌐 国际' : '🇨🇳 国内'}</td>
+        <td>${a.region === 'intl' ? '🌐 国际' : '🇨🇳 国内'}${a.proxy ? ' <span class="pill ok">代理</span>' : ''}</td>
         <td class="mono">${esc(a.authType)}</td>
         <td class="mono">${esc(a.accessKeyIdMasked)}</td>
         <td>${st}</td>
@@ -418,9 +418,13 @@ function openAccount(pre) {
     { k: 'accessKeyId', label: 'AccessKey ID', value: '', ph: pre.id ? '（留空表示不修改）' : 'HSTA…' },
     { k: 'secretAccessKey', label: 'Secret AccessKey', value: '', ph: pre.id ? '（留空表示不修改）' : '' },
     { k: 'securityToken', label: 'Security Token（STS 临时凭据才需要）', value: '', ph: '可选' },
+    { k: 'department', label: '部门（depart 头）', value: pre.department ?? '', ph: '留空回落 config.identity.department' },
+    { k: 'proxy', label: '出口代理（http://user:pass@host:port）', value: pre.proxy ?? '', ph: '可选：一个账号一条固定出口 IP' },
     { k: 'note', label: '备注', value: pre.note ?? '', ph: '可选' },
   ], async (vals) => {
     for (const k of ['accessKeyId','secretAccessKey','securityToken']) if (!vals[k]) delete vals[k];
+    // 后端回显的代理地址是打过码的，别拿它覆盖真值
+    if (vals.proxy && vals.proxy.includes('***')) delete vals.proxy;
     if (pre.id) await api('/accounts/' + pre.id, { method: 'PATCH', body: JSON.stringify(vals) });
     else await api('/accounts', { method: 'POST', body: JSON.stringify(vals) });
     toast(pre.id ? '已保存' : '已添加');

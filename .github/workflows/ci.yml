@@ -11,9 +11,56 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  # 先做最便宜的检查：语法、JSON、License。挂了后面的 job 不用白跑。
+  lint:
+    name: 语法 / JSON / License
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 显示环境
+        run: |
+          node --version
+          npm --version 2>/dev/null || true
+
+      - name: 所有 .mjs 语法检查
+        run: |
+          set -e
+          files=$(git ls-files '*.mjs')
+          echo "$files" | wc -l
+          for f in $files; do node --check "$f"; done
+          echo "语法检查通过"
+
+      - name: 所有 .json 可解析
+        run: |
+          set -e
+          for f in $(git ls-files '*.json'); do
+            node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" "$f"
+          done
+          echo "JSON 检查通过"
+
+      - name: License 一致性（LICENSE 与 package.json）
+        run: |
+          set -e
+          grep -q "MIT License" LICENSE
+          node -e "
+            const pkg = require('./package.json');
+            if (pkg.license !== 'MIT') { throw new Error('package.json license 不是 MIT: ' + pkg.license); }
+            console.log('license =', pkg.license, '| author =', pkg.author);
+          "
+
+  # 主测试：起网关跑全量套件（含出站指纹与网关端到端）
   test:
     name: 测试 (Node ${{ matrix.node }})
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -45,7 +92,7 @@ jobs:
 
       - name: 启动网关
         run: |
-          MOCK_HUB_CONFIG=config.ci.json node server.mjs > data/server.log 2>&1 &
+          MOCK_HUB_CONFIG=config.ci.json MOCK_HUB_DATA=data/ci node server.mjs > data/server.log 2>&1 &
           echo $! > .server.pid
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:8787/health > /dev/null 2>&1; then
@@ -60,26 +107,8 @@ jobs:
           cat data/server.err.log 2>/dev/null || true
           exit 1
 
-      - name: 接口自检
-        run: node tools/selftest.mjs
-
-      - name: 新增能力（工具调用 / codebase / 会话路由）
-        run: node tools/test-tools.mjs
-
-      - name: 重放
-        run: node tools/test-replay.mjs
-
-      - name: 批量重放
-        run: node tools/test-batch.mjs
-
-      - name: 控制台（认证 / 账号池 / API Key / 用量）
-        run: node tools/test-panel.mjs
-
-      - name: 代理模式
-        run: node tools/test-proxy.mjs
-
-      - name: 完整会话模拟
-        run: node tools/simulate-cli.mjs
+      - name: 全量测试（自检 / 工具 / 重放 / 批量 / 控制台 / 指纹 / 网关）
+        run: npm test
 
       - name: 收集日志
         if: always()
@@ -89,14 +118,67 @@ jobs:
           echo '--- data/server.err.log ---'
           cat data/server.err.log 2>/dev/null || true
 
+      - name: 上传失败现场
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-node${{ matrix.node }}
+          path: |
+            data/server.log
+            data/server.err.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: 停止网关
         if: always()
         run: |
           if [ -f .server.pid ]; then kill "$(cat .server.pid)" 2>/dev/null || true; fi
 
+  # 镜像必须能独立跑起来：曾经漏拷 lib/ 导致容器内 import 直接失败
+  docker:
+    name: 镜像构建 + 冒烟
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建镜像
+        run: docker build -t kio-code-gateway:ci .
+
+      - name: 启动容器
+        run: |
+          docker run -d --name gw-ci \
+            -e MOCK_HUB_MODE=mock \
+            -e MOCK_HUB_DATA=/app/data \
+            -p 18787:8787 \
+            kio-code-gateway:ci
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:18787/health; then echo; echo "容器已就绪"; exit 0; fi
+            sleep 0.5
+          done
+          echo "容器没起来："
+          docker logs gw-ci || true
+          exit 1
+
+      - name: 镜像内部自检（lib / 指纹 / 文档）
+        run: |
+          set -e
+          docker exec gw-ci node -e "import('/app/lib/gateway.mjs').then(()=>console.log('gateway.mjs ok'))"
+          docker exec gw-ci node -e "import('/app/lib/stealth.mjs').then(m=>console.log('UA =', m.resolveProfile({}).userAgent))"
+          docker exec gw-ci node -e "const fs=require('fs');for(const f of ['/app/LICENSE','/app/docs/stealth.md','/app/lib/transport.mjs','/app/lib/pacing.mjs']) fs.accessSync(f);console.log('files ok')"
+          docker exec gw-ci node tools/test-stealth.mjs
+          echo "镜像自检通过"
+
+      - name: 收尾
+        if: always()
+        run: |
+          docker logs gw-ci 2>/dev/null || true
+          docker rm -f gw-ci 2>/dev/null || true
+
   # 443 捕获需要绑定特权端口与自签证书（make-cert.ps1 仅 Windows），单独跑在 Windows 上
   capture:
     name: 443 捕获 (Windows)
+    needs: lint
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +205,7 @@ jobs:
             console.log('capture:', JSON.stringify(c.capture));
           "
           $env:MOCK_HUB_CONFIG = 'config.capture-ci.json'
+          $env:MOCK_HUB_DATA = 'data/ci'
           Start-Process node -ArgumentList 'server.mjs' -WorkingDirectory $PWD `
             -RedirectStandardOutput data/server.log -RedirectStandardError data/server.err.log
           $up = $false

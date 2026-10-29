@@ -1,0 +1,26 @@
+{
+  "name": "kio-code-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "码道（CodeArts）CLI 反代网关：OpenAI 兼容入口 + 多账号调度 + 控制台",
+  "license": "MIT",
+  "author": "kiolhy",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kiolhy/kio-code.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "gateway": "node server.mjs",
+    "test": "node tools/selftest.mjs && node tools/test-tools.mjs && node tools/test-replay.mjs && node tools/test-batch.mjs && node tools/test-panel.mjs && node tools/test-stealth.mjs && node tools/test-gateway.mjs",
+    "test:gateway": "node tools/test-gateway.mjs",
+    "test:stealth": "node tools/test-stealth.mjs",
+    "test:panel": "node tools/test-panel.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

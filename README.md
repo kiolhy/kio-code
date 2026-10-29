@@ -142,7 +142,40 @@ CLI 里有个 `agent_defense_combined.exe`，它用 `_Un(url)` 判断是否劫�
 鉴权按优先级：本地 `ak/sk` 重签 → 透传客户端签名 → `authToken` → `apiKey`。
 SSE 流式原样透传。`route.proxyable` 为真的接口才走上游，其余继续本地 mock。
 
-### 3. 签名校验（`verifySignature: true`）
+### 3. 网关（`mode: "gateway"`）：部署在服务器当反代
+
+上面两种模式都是「给 CLI 用」。这一种是反过来：**把码道包装成一个 OpenAI 兼容服务**，
+给任何支持自定义 baseURL 的客户端用，部署在服务器上，账号池在控制台里维护。
+
+```
+客户端（ChatGPT-Next-Web / LobeChat / Cursor / 自研） 
+   → http://你的服务器:8787/v1/chat/completions
+      → 账号池挑一个 AK/SK，按码道协议签名、补齐字段
+         → https://snap-access.<region>.myhuaweicloud.com/api/v2/chat/completions
+```
+
+入口：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/v1/chat/completions` | OpenAI 协议，支持 SSE；`Authorization: Bearer mh-xxx` |
+| `POST` | `/v1/messages` | Anthropic 协议，内部转成上面的 chat |
+| `GET` | `/v1/models` | 取 `gateway.models`，没配就回落到 `config.models[].model_name` |
+
+要点：
+
+- **默认强制鉴权**（`gateway.requireKey !== false`），Key 在控制台「API Key」页创建，
+  支持模型白名单；公网部署别关。
+- 账号在控制台「账号」页添加（AK/SK/SecurityToken/区域），失败自动换号重试，
+  429/401/5xx 会按 `stealth.cooldown` 冷却，见 `lib/pacing.mjs`。
+- 每个账号可以单独配出口代理（账号表单里的 `proxy`）：**一个账号一条固定 IP**，
+  比一堆账号共享服务器 IP 稳得多。
+- 容器化：`docker compose up -d --build`，数据在 `./data`。
+  Linux 首次启动前先 `mkdir -p data && sudo chown -R 1000:1000 data`（镜像内是 node/uid 1000）。
+- 出站请求「像不像真 CLI」这件事单独写在 **[docs/stealth.md](docs/stealth.md)**：
+  头集合、头顺序、会话 id、TLS 参数、节流与冷却，以及哪些差异做不到。
+
+### 4. 签名校验（`verifySignature: true`）
 
 按 CLI 里的 `f4` 类逐字节实现 `SDK-HMAC-SHA256`：
 
@@ -379,6 +412,26 @@ node server.mjs                 # 8787 + 443 同时监听
 
 完整的出站面清单、上报内容、检测信号强弱排序，见 **[docs/egress.md](docs/egress.md)**。
 
+### 部署成反代网关时
+
+这一节讲的是「本地拦住自己」。网关部署在服务器上时，问题变成「上游怎么看待这个客户端」，
+本仓库按下面四层处理（细节见 **[docs/stealth.md](docs/stealth.md)**）：
+
+| 层 | 做法 |
+|---|---|
+| 头 | 按 CLI 的 `getInferhubHcHeaders()` 同构构造 30+ 个头，顺序固定，空值有白名单 |
+| 自证 | 出站不许出现 `kio` / `mock-hub` / `gateway/1.0` / `undici` / `user-agent: node`；`assertNoLeaks` 命中直接报错 |
+| 会话 | `x-ot-session-id` 按账号稳定、trace/span 每请求更新，和真 CLI 一致 |
+| 节奏 | 单账号并发 1、最小间隔 + 抖动、429/401/5xx 冷却 + `Retry-After`、失败换号重试 |
+
+TLS 层面只能近似（Node OpenSSL ≠ Bun BoringSSL），这一点没打算糊弄，见 stealth 文档
+「做不到的部分」。运行时自检：
+
+```bash
+curl -s http://127.0.0.1:8787/health | jq .outbound
+node tools/test-stealth.mjs     # 53 项：头集合 / 签名 / 节流 / 头顺序 / CONNECT 代理
+```
+
 ---
 
 ## 数据落盘
@@ -398,7 +451,7 @@ data/
 
 | 字段 | 作用 |
 |---|---|
-| `mode` | `mock` / `proxy` |
+| `mode` | `mock` / `proxy` / `gateway` |
 | `simulate.latencyMs` | 每个请求的假延迟 |
 | `simulate.streamChunkDelayMs` | SSE 每块间隔 |
 | `simulate.errorRate` | 错误注入概率（0–1），配 `errorStatus` |
@@ -408,9 +461,12 @@ data/
 | `benefit.balance` | 余额、可领取状态 |
 | `privacy.collect_data` | 影响 CLI 的 `shouldMaskData` |
 | `multimodalModel` | `/v1/model/builtin` 返回的内置多模态模型 |
+| `gateway.*` | 网关模式：区域地址、chat 路径、对外模型清单、`requireKey` |
+| `stealth.*` | 出站画像 / 代理 / 节流 / 冷却 / TLS，见 [docs/stealth.md](docs/stealth.md) |
 
 环境变量覆盖：`MOCK_HUB_PORT`、`MOCK_HUB_HOST`、`MOCK_HUB_MODE`、`MOCK_HUB_UPSTREAM`、
-`MOCK_HUB_CONFIG`、`MOCK_HUB_DATA`、`MOCK_HUB_LOG_LEVEL`。
+`MOCK_HUB_CONFIG`、`MOCK_HUB_DATA`、`MOCK_HUB_LOG_LEVEL`、`MOCK_HUB_GATEWAY_REGION`、
+`MOCK_HUB_EGRESS_PROXY`、`MOCK_HUB_CONCURRENCY`。
 
 ---
 
@@ -420,20 +476,31 @@ data/
 mock-hub/
 ├── server.mjs              路由分发、管理 API、启动
 ├── config.json             全部可调参数
+├── Dockerfile              生产镜像（必须带 lib/）
+├── docker-compose.yml      一键部署
+├── .github/workflows/ci.yml  lint / 测试 / 镜像冒烟 / 443 捕获
 ├── lib/
 │   ├── sign.mjs            SDK-HMAC-SHA256 签名与校验
 │   ├── mock.mjs            各接口响应体 + SSE 流
 │   ├── proxy.mjs           真实上游转发
+│   ├── gateway.mjs         网关模式：协议补齐 + 签名 + 流式透传
+│   ├── stealth.mjs         出站画像：头集合 / 会话 id / 泄漏自检
+│   ├── transport.mjs       传输层：头顺序 / TLS 参数 / CONNECT 代理
+│   ├── pacing.mjs          节流：账号并发 / 间隔抖动 / 冷却
 │   ├── proto.mjs           OTLP protobuf 轻量解析
 │   └── store.mjs           JSONL 落盘 + 环形缓冲 + 脱敏
 ├── public/admin.html       管理面板
-├── docs/egress.md          出站面与检测面分析
+├── docs/
+│   ├── egress.md           出站面与检测面分析
+│   └── stealth.md          反代网关的「不像网关」清单
 ├── tools/
 │   ├── selftest.mjs        44 项接口自检
 │   ├── simulate-cli.mjs    完整 CLI 会话模拟
 │   ├── test-proxy.mjs      反代与 absolute-form 验证
 │   ├── test-replay.mjs     单条重放 14 项验证
 │   ├── test-batch.mjs      批量重放 15 项验证（含并发有效性）
+│   ├── test-stealth.mjs    出站指纹 / 节流 / 代理 53 项验证
+│   ├── test-gateway.mjs    网关模式端到端（假上游断言签名与头）
 │   ├── test-capture.mjs    遥测捕获 13 项验证（自签证书 / OTLP / 来源域名）
 │   ├── egress-proxy.mjs    出站代理：不用管理员权限替代 hosts，拦截+捕获
 │   ├── analyze-request.mjs 拆解一条请求：结构 / 工具清单 / 体积分布
@@ -441,3 +508,9 @@ mock-hub/
 │   └── lockdown.ps1        hosts 隔离：切断官方遥测（可逆）
 └── start-codearts.ps1      一键接入
 ```
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 kiolhy (kio-code / 码道)

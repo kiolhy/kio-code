@@ -134,5 +134,64 @@
     "host": "0.0.0.0",
     "pfxPath": "data/certs/capture.pfx",
     "pfxPass": "mock-hub"
+  },
+  "gateway": {
+    "defaultRegion": "cn",
+    "regions": {
+      "cn": "https://snap-access.cn-north-4.myhuaweicloud.com",
+      "intl": "https://snap-access.ap-southeast-1.myhuaweicloud.com"
+    },
+    "chatPath": "/api/v2/chat/completions",
+    "owner": "codearts",
+    "models": []
+  },
+  "stealth": {
+    "profile": {
+      "userAgent": "Bun/1.3.14",
+      "pluginName": "codearts-cli",
+      "pluginVersion": "26.10.9",
+      "ideName": "codearts",
+      "ideVersion": "26.10.9",
+      "kernelVersion": "26.10.9",
+      "otClientVersion": "26.10.9",
+      "otFunction": "agent-tui",
+      "clientType": "DevMate",
+      "agentType": "CodeAgent",
+      "referer": "CodeBase",
+      "appId": "CodeAgent3.0",
+      "maasType": "benefit",
+      "language": "zh-cn",
+      "clientIp": "auto",
+      "currentUser": "",
+      "department": ""
+    },
+    "sessionTtlMs": 3600000,
+    "timeoutMs": 300000,
+    "streamIdleMs": 180000,
+    "assertNoLeaks": true,
+    "egress": {
+      "proxy": ""
+    },
+    "pacing": {
+      "maxConcurrentPerAccount": 1,
+      "maxGlobalConcurrent": 8,
+      "minIntervalMs": 250,
+      "jitterMs": 150,
+      "queueTimeoutMs": 30000
+    },
+    "cooldown": {
+      "on429Ms": 60000,
+      "on5xxMs": 15000,
+      "onAuthErrorMs": 600000,
+      "respectRetryAfter": true
+    },
+    "retry": {
+      "maxAttempts": 3,
+      "rotateOnStatus": [401, 403, 429, 500, 502, 503, 504]
+    },
+    "tls": {
+      "alpn": ["http/1.1"],
+      "curves": "X25519:P-256:P-384"
+    }
   }
 }

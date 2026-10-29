@@ -12,7 +12,16 @@ import { buildHandlers, streamOpenAI, streamAnthropic, handleOtlp } from './lib/
 import { proxyToUpstream } from './lib/proxy.mjs';
 import { buildRipgrepStubZip } from './lib/zip.mjs';
 import { createPanel } from './lib/panel.mjs';
+import {
+  forwardChatOnce,
+  forwardChatStream,
+  anthropicToOpenAI,
+  openAIToAnthropic,
+  pickCredentials,
+} from './lib/gateway.mjs';
 import { verifyRequest, parseAuthorization } from './lib/sign.mjs';
+import { createGovernor, parseRetryAfter } from './lib/pacing.mjs';
+import { resolveProfile, findIdentityLeaks } from './lib/stealth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.MOCK_HUB_CONFIG || path.join(__dirname, 'config.json');
@@ -24,10 +33,33 @@ const DATA_DIR = process.env.MOCK_HUB_DATA || path.join(__dirname, 'data');
 
 function loadConfig() {
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  if (process.env.MOCK_HUB_PORT) cfg.port = Number(process.env.MOCK_HUB_PORT);
-  if (process.env.MOCK_HUB_HOST) cfg.host = process.env.MOCK_HUB_HOST;
+  // 兼容两种写法：MOCK_HUB_* 与容器里常见的 HOST/PORT
+  if (process.env.MOCK_HUB_PORT ?? process.env.PORT) cfg.port = Number(process.env.MOCK_HUB_PORT ?? process.env.PORT);
+  if (process.env.MOCK_HUB_HOST ?? process.env.HOST) cfg.host = process.env.MOCK_HUB_HOST ?? process.env.HOST;
   if (process.env.MOCK_HUB_MODE) cfg.mode = process.env.MOCK_HUB_MODE;
   if (process.env.MOCK_HUB_UPSTREAM) cfg.upstream.baseUrl = process.env.MOCK_HUB_UPSTREAM;
+
+  cfg.gateway = cfg.gateway ?? {};
+  if (process.env.MOCK_HUB_GATEWAY_REGION) cfg.gateway.defaultRegion = process.env.MOCK_HUB_GATEWAY_REGION;
+  cfg.gateway.regions = cfg.gateway.regions ?? {};
+  if (process.env.MOCK_HUB_GATEWAY_CN) cfg.gateway.regions.cn = process.env.MOCK_HUB_GATEWAY_CN;
+  if (process.env.MOCK_HUB_GATEWAY_INTL) cfg.gateway.regions.intl = process.env.MOCK_HUB_GATEWAY_INTL;
+  if (process.env.MOCK_HUB_GATEWAY_MODELS) {
+    cfg.gateway.models = process.env.MOCK_HUB_GATEWAY_MODELS.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  /* 出站指纹 / 节流：部署在服务器上时这些基本都靠环境变量给 */
+  cfg.stealth = cfg.stealth ?? {};
+  cfg.stealth.profile = cfg.stealth.profile ?? {};
+  cfg.stealth.egress = cfg.stealth.egress ?? {};
+  if (process.env.MOCK_HUB_EGRESS_PROXY) cfg.stealth.egress.proxy = process.env.MOCK_HUB_EGRESS_PROXY;
+  if (process.env.MOCK_HUB_UA) cfg.stealth.profile.userAgent = process.env.MOCK_HUB_UA;
+  if (process.env.MOCK_HUB_CLIENT_IP) cfg.stealth.profile.clientIp = process.env.MOCK_HUB_CLIENT_IP;
+  if (process.env.MOCK_HUB_DEPART) cfg.stealth.profile.department = process.env.MOCK_HUB_DEPART;
+  if (process.env.MOCK_HUB_CURRENT_USER) cfg.stealth.profile.currentUser = process.env.MOCK_HUB_CURRENT_USER;
+  if (process.env.MOCK_HUB_CONCURRENCY) {
+    cfg.stealth.pacing = { ...(cfg.stealth.pacing ?? {}), maxConcurrentPerAccount: Number(process.env.MOCK_HUB_CONCURRENCY) || 1 };
+  }
   return cfg;
 }
 
@@ -35,6 +67,8 @@ let cfg = loadConfig();
 const store = createStore({ dataDir: DATA_DIR, maxRecords: cfg.telemetry?.maxRecords ?? 5000 });
 const panel = createPanel({ dataDir: DATA_DIR });
 const handlers = buildHandlers(cfg, store);
+// 出站节流：账号级并发/间隔/冷却，形状见 lib/pacing.mjs
+const governor = createGovernor({ cfg });
 
 function saveConfig() {
   try {
@@ -441,6 +475,241 @@ async function handlePanelApi(req, res, url, method, reqId, started) {
   }
 }
 
+/** 上游错误 → 客户端状态码 */
+function gatewayErrorStatus(e) {
+  const map = {
+    no_credentials: 503,
+    account_cooldown: 429,
+    gateway_busy: 503,
+    ETIMEDOUT: 504,
+    proxy_error: 502,
+    proxy_connect_failed: 502,
+    fingerprint_leak: 500,
+  };
+  return map[e?.code] ?? 502;
+}
+
+/**
+ * 一次上游调用的重试 + 轮换：命中 rotateOnStatus 就换下一个账号再试一遍。
+ * 流式请求只有在还没写响应头时才能重试。
+ */
+async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
+  const st = cfg.stealth ?? {};
+  const attempts = Math.max(1, Math.min(5, st.retry?.maxAttempts ?? 3));
+  const rotateOn = new Set(st.retry?.rotateOnStatus ?? [401, 403, 429, 500, 502, 503, 504]);
+  const tried = [];
+  let lastError = null;
+  let cooling = null;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const creds = pickCredentials({ ctx, panel, cfg, exclude: tried });
+    if (!creds) {
+      if (tried.length === 0) {
+        const e = new Error('没有可用账号：请先在控制台添加账号，或配置 upstream.ak/sk');
+        e.code = 'no_credentials';
+        throw e;
+      }
+      break;
+    }
+
+    // 冷却中的账号直接跳过，让别的账号先顶上
+    if (creds.account && governor.isCoolingDown(creds.account)) {
+      cooling = creds.account.id;
+      tried.push(creds.account.id);
+      continue;
+    }
+
+    let release;
+    try {
+      // 账号级并发 / 最小间隔 / 冷却都在这里排队
+      release = await governor.acquire(creds.account);
+    } catch (e) {
+      lastError = e;
+      if (creds.account?.id) tried.push(creds.account.id);
+      if (e.code === 'account_cooldown') {
+        cooling = creds.account?.id ?? null;
+        continue;
+      }
+      break;
+    }
+
+    try {
+      if (stream) {
+        const r = await forwardChatStream({ body, cfg, panel, ctx, res, onUsage, credentials: creds });
+        if (r.status === 200 || !rotateOn.has(r.status) || attempt === attempts - 1) return r;
+        governor.penalize(creds.account, r.status, parseRetryAfter(r.headers?.['retry-after']));
+      } else {
+        const r = await forwardChatOnce({ body, cfg, panel, ctx, credentials: creds });
+        if (!rotateOn.has(r.status) || attempt === attempts - 1) return r;
+        governor.penalize(creds.account, r.status, parseRetryAfter(r.headers?.['retry-after']));
+      }
+    } catch (e) {
+      lastError = e;
+      if (res?.headersSent) throw e; // 已经往外吐了字节，重试只会污染响应
+      governor.penalize(creds.account, 500, 0);
+      if (attempt === attempts - 1) throw e;
+    } finally {
+      release();
+    }
+
+    if (creds.account?.id) tried.push(creds.account.id);
+  }
+
+  if (lastError) throw lastError;
+  if (cooling) {
+    const e = new Error('所有可用账号都在冷却中，稍后再试');
+    e.code = 'account_cooldown';
+    e.account = cooling;
+    throw e;
+  }
+  const e = new Error('上游轮换失败：没有可继续尝试的账号');
+  e.code = 'no_credentials';
+  throw e;
+}
+
+/** 网关模式：把 OpenAI 兼容请求转发到真实码道上游 */
+async function handleGateway(req, res, url, method, headers, reqId, started) {
+  const p = url.pathname.replace(/\/+$/, '') || '/v1';
+
+  /* ---- 模型列表 ---- */
+  if (p === '/v1/models' && method === 'GET') {
+    const gw = cfg.gateway ?? {};
+    const list = gw.models ?? (cfg.models ?? []).map((m) => m.model_name).filter(Boolean);
+    return void sendJson(res, 200, {
+      object: 'list',
+      data: list.map((id) => ({
+        id,
+        object: 'model',
+        created: Math.floor(Date.now() / 1000),
+        owned_by: gw.owner ?? 'codearts',
+      })),
+    });
+  }
+
+  /* ---- 其余都要读体 ---- */
+  let body = {};
+  let rawBody = Buffer.alloc(0);
+  try {
+    rawBody = await readBody(req, cfg.maxBodyBytes ?? 67108864);
+    body = rawBody.length ? JSON.parse(rawBody.toString('utf8')) : {};
+  } catch (e) {
+    return void sendJson(res, 400, {
+      error: { code: 'bad_request', message: `请求体解析失败: ${e?.message ?? e}` },
+    });
+  }
+
+  /* ---- 鉴权 ---- */
+  const rawKey = (() => {
+    const h = headers.authorization ?? '';
+    const m = /^Bearer\s+(.+)$/i.exec(h);
+    if (m) return m[1].trim();
+    return headers['x-api-key'] ?? headers['api-key'] ?? '';
+  })();
+  // 网关模式默认强制鉴权（公网部署时不能裸奔），可用 gateway.requireKey=false 显式关闭
+  const gwRequireKey = cfg.gateway?.requireKey !== false;
+  const enforce = panel.settings().enforceKeys === true || (cfg.mode === 'gateway' && gwRequireKey);
+  const verdict = panel.authorize(rawKey, body?.model);
+  if (!verdict.ok && enforce) {
+    return void sendJson(res, 401, {
+      error: { code: verdict.code, message: verdict.message, type: 'invalid_request_error' },
+    });
+  }
+
+  const ctx = {
+    authKey: verdict.ok ? verdict.key : null,
+    authAccount: verdict.ok ? panel.pickAccount(verdict.key?.accountRef ?? null) : panel.pickAccount(null),
+  };
+
+  const finishUsage = ({ usage, account, model, status, stream }) => {
+    panel.recordUsage({
+      keyId: ctx.authKey?.id ?? null,
+      keyName: ctx.authKey?.name ?? null,
+      accountId: account?.id ?? null,
+      accountName: account?.name ?? null,
+      model: model ?? body?.model ?? 'unknown',
+      route: p.includes('messages') ? 'gateway.messages' : 'gateway.chat',
+      status: status ?? 200,
+      promptTokens: usage?.prompt_tokens ?? usage?.input_tokens ?? 0,
+      completionTokens: usage?.completion_tokens ?? usage?.output_tokens ?? 0,
+      cachedTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      durMs: Date.now() - started,
+      stream: !!stream,
+    });
+    store.recordRequest({
+      id: reqId, ts: new Date().toISOString(), method, route: p.includes('messages') ? 'gateway.messages' : 'gateway.chat',
+      path: url.pathname, status: status ?? 200, durMs: Date.now() - started, mode: 'gateway',
+      reqBytes: rawBody.length, resBytes: 0, host: cfg.gateway?.regions?.cn ?? '',
+    }, null);
+  };
+
+  /* ---- chat completions ---- */
+if (p === '/v1/chat/completions' && method === 'POST') {
+  try {
+    if (body.stream === true) {
+      const r = await callUpstreamWithRotation({
+        body, ctx, stream: true, res,
+        onUsage: ({ usage, account, model }) => finishUsage({ usage, account, model, status: 200, stream: true }),
+      });
+      if (r.status !== 200) {
+        if (!res.headersSent) {
+          return void sendJson(res, r.status, { error: { code: 'upstream_error', message: r.errorText?.slice(0, 2000) } });
+        }
+        res.end();
+        finishUsage({ usage: null, account: r.account, model: body?.model, status: r.status, stream: true });
+      }
+      return;
+    }
+
+    const r = await callUpstreamWithRotation({ body, ctx, stream: false });
+    let json;
+    try {
+      json = JSON.parse(r.body.toString('utf8'));
+    } catch {
+      return void sendJson(res, 502, {
+        error: { code: 'bad_upstream_response', message: r.body.toString('utf8').slice(0, 2000) },
+      });
+    }
+    finishUsage({ usage: json?.usage, account: r.account, model: body?.model, status: r.status, stream: false });
+    return void sendJson(res, r.status, json);
+  } catch (e) {
+    const code = gatewayErrorStatus(e);
+    return void sendJson(res, code, {
+      error: { code: e?.code ?? 'gateway_error', message: String(e?.message ?? e) },
+    });
+  }
+}
+
+/* ---- Anthropic messages ---- */
+if (p === '/v1/messages' && method === 'POST') {
+  try {
+    const oaBody = anthropicToOpenAI(body);
+    // 这里只做「非流式 Anthropic 响应」：上游开流会拿到 SSE，JSON.parse 必然失败，
+    // 所以强制走非流式转换。要真流式得单独实现 Anthropic SSE 事件序列。
+    oaBody.stream = false;
+    const r = await callUpstreamWithRotation({ body: oaBody, ctx, stream: false });
+    let json;
+    try {
+      json = JSON.parse(r.body.toString('utf8'));
+    } catch {
+      return void sendJson(res, 502, { error: { code: 'bad_upstream_response', message: r.body.toString('utf8').slice(0, 2000) } });
+    }
+    finishUsage({ usage: json?.usage, account: r.account, model: oaBody.model, status: r.status, stream: false });
+    return void sendJson(res, r.status, openAIToAnthropic(json));
+  } catch (e) {
+    const code = gatewayErrorStatus(e);
+    return void sendJson(res, code, { error: { code: e?.code ?? 'gateway_error', message: String(e?.message ?? e) } });
+  }
+}
+
+  return void sendJson(res, 404, {
+    error: {
+      code: 'unknown_endpoint',
+      message: `网关模式暂不支持 ${method} ${p}`,
+      supported: ['GET /v1/models', 'POST /v1/chat/completions', 'POST /v1/messages'],
+    },
+  });
+}
+
 /** 账号对象脱敏（给 API 用） */
 function publicAccountSafe(acc) {
   const { secretAccessKey, securityToken, ...rest } = acc;
@@ -539,12 +808,27 @@ const requestHandler = async (req, res) => {
   }
 
   if (url.pathname === '/health' || url.pathname === '/healthz') {
+    const prof = resolveProfile(cfg);
     return void sendJson(res, 200, {
       ok: true,
       mode: cfg.mode,
       uptimeSec: Math.round(process.uptime()),
       requests: store.counters.requests,
+      // 出站视角：部署后先看这里，确认 UA / 代理 / 并发是不是你要的那套
+      outbound: {
+        client: `${prof.pluginName}/${prof.pluginVersion}`,
+        userAgent: prof.userAgent,
+        egressProxy: !!(cfg.stealth?.egress?.proxy),
+        perAccountConcurrency: cfg.stealth?.pacing?.maxConcurrentPerAccount ?? 1,
+        accounts: governor.snapshot().accounts.length,
+        leaking: findIdentityLeaks({ 'user-agent': prof.userAgent }).length > 0,
+      },
     });
+  }
+
+  /* ---------- 网关模式：真实上游（OpenAI 兼容入口） ---------- */
+  if (cfg.mode === 'gateway' && (url.pathname === '/v1' || url.pathname.startsWith('/v1/'))) {
+    return void handleGateway(req, res, url, method, headers, reqId, started);
   }
 
   /* ---------- 读体 ---------- */

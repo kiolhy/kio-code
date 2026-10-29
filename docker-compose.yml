@@ -1,0 +1,45 @@
+# 码道网关 · Docker Compose
+#
+# 默认只监听回环，公网访问请在前面套 Nginx / Caddy / Cloudflare Tunnel。
+# 首次启动后打开 http://127.0.0.1:8787/ ，用默认密码 admin 登录并立刻改掉。
+
+services:
+  gateway:
+    build: .
+    image: kio-code-gateway:latest
+    container_name: kio-code-gateway
+    restart: unless-stopped
+    ports:
+      # 只绑回环；要局域网访问改成 "8787:8787"，并确保已启用强制鉴权
+      - "127.0.0.1:8787:8787"
+    environment:
+      MOCK_HUB_MODE: gateway
+      MOCK_HUB_HOST: 0.0.0.0
+      MOCK_HUB_PORT: "8787"
+      # 默认区域：cn（国内）或 intl（国际）
+      MOCK_HUB_GATEWAY_REGION: cn
+      # 出站出口代理：给账号配固定 IP 更稳（支持 http/https CONNECT）
+      # MOCK_HUB_EGRESS_PROXY: http://user:pass@10.0.0.9:3128
+      # 单个账号的并发上限，默认 1（真 CLI 就是一个人在用）
+      # MOCK_HUB_CONCURRENCY: "1"
+      # 上游地址，一般不用改
+      # MOCK_HUB_GATEWAY_CN: https://snap-access.cn-north-4.myhuaweicloud.com
+      # MOCK_HUB_GATEWAY_INTL: https://snap-access.ap-southeast-1.myhuaweicloud.com
+      # /v1/models 对外宣告的模型清单，逗号分隔
+      # MOCK_HUB_GATEWAY_MODELS: deepseek-v3.2,qwen3.6-27b
+    volumes:
+      # 账号、API Key、用量、日志都在这里，务必持久化
+      # Linux 首次启动前先给权限：mkdir -p data && sudo chown -R 1000:1000 data
+      # （镜像里以 node 用户运行，uid 1000；否则写 settings.json 会 permission denied）
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
