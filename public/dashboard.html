@@ -759,7 +759,14 @@ function renderAccountInfo(info) {
     ? `<table><thead><tr><th>字段</th><th class="num">值</th></tr></thead><tbody>` +
       Object.entries(bal).map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num">${fmt(v)}</td></tr>`).join('') +
       '</tbody></table>'
-    : '<div class="hint">该账号没有 benefit 套餐，余额接口返回业务拒绝（模型与价格不受影响）</div>';
+    : (() => {
+        const b = info.benefit ?? {};
+        const why = b.message
+          ? `<div class="hint">${esc(b.message)}${b.code ? `（error_code ${esc(b.code)}）` : ''}</div>`
+          : '<div class="hint">该账号没有 benefit 套餐，余额接口返回业务拒绝（模型与价格不受影响）</div>';
+        return `<div class="hint" style="color:#d29922;margin-bottom:6px">余额不可用 —— 这是账号侧的套餐状态，不是鉴权失败</div>${why}
+          <div class="hint" style="margin-top:6px">签名已通过（HTTP 200 进到业务层），模型与价格照常可用。</div>`;
+      })();
 
   const rawKeys = Object.keys(info.raw ?? {});
   const rawBlock = rawKeys.length
@@ -780,7 +787,7 @@ function renderAccountInfo(info) {
     <div class="grid g3" style="margin-bottom:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
       <div class="kpi"><div class="label">可用模型</div><div class="value">${info.modelCount ?? models.length}</div><div class="sub">${esc(info.checkedAt ?? '')}</div></div>
       <div class="kpi"><div class="label">智能体</div><div class="value">${info.agentCount ?? 0}</div><div class="sub">${esc(String(info.agentId ?? '').slice(0, 12))}…</div></div>
-      <div class="kpi"><div class="label">剩余积分</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">benefit 套餐才有</div></div>
+      <div class="kpi"><div class="label">剩余积分</div><div class="value">${info.balanceTotal == null ? '—' : fmt(info.balanceTotal)}</div><div class="sub">${info.benefit?.enabled ? 'benefit 套餐已开通' : '未开通 benefit 套餐'}</div></div>
     </div>
     ${userLine}
     <h4 style="margin-top:14px">可用模型与价格</h4>${mtable}

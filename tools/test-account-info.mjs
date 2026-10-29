@@ -85,6 +85,9 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/api/v1/user/tokens/balance') {
     return send(200, { error_code: '4000', error_msg: 'invalid channel, group not found', result: null });
   }
+  if (u.pathname === '/api/v1/gateway/config') {
+    return send(200, { error_code: '4000', error_msg: 'invalid channel, group not found', result: null });
+  }
   return send(404, { error_msg: 'The API does not exist or has not been published in the environment', error_code: 'APIG.0101' });
 });
 
@@ -157,7 +160,8 @@ console.log('\n\x1b[1m[4] 真实链路（假服务，真实字段）\x1b[0m');
   ok('选中 primary agent', r.agentId === '9f0e5cb64a104dcfb4aa90dbedab7dcf', r.agentId);
   ok('模型数 3', r.modelCount === 3, String(r.modelCount));
   ok('余额为 null（无 benefit）', r.balanceTotal === null);
-  ok('业务拒绝被单独记录', r.errors.some((e) => e.includes('invalid channel')), JSON.stringify(r.errors));
+  ok('业务拒绝被单独记录', r.errors.some((e) => e.includes('没有 benefit 套餐')), JSON.stringify(r.errors));
+  ok('错误码带原文', r.errors.some((e) => e.includes('error_code 4000')));
   ok('记录三处来源', !!r.sources.user && !!r.sources.userAgents && !!r.sources.agentDetail, JSON.stringify(Object.keys(r.sources)));
   ok('原始响应已保存', typeof r.raw.user === 'string' && r.raw.user.includes('domain_id'));
 
@@ -184,6 +188,49 @@ console.log('\n\x1b[1m[5] 异常与降级\x1b[0m');
   let threw = null;
   try { await bad.probe({ id: 'x' }); } catch (e) { threw = e; }
   ok('缺 AK/SK 报 no_credential', threw?.code === 'no_credential', threw?.code);
+}
+
+console.log('\n\x1b[1m[5b] benefit 成功码 "0000" + gateway config 真实结构\x1b[0m');
+{
+  // CLI 里成功判定是 error_code === "0000"（四个零），不是 "0"
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const send = (obj) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    if (u.pathname === '/snap-manager/v1/current/user') return send(REAL_USER);
+    if (u.pathname === '/v1/agent-center/agents/useragents') return send({ total: 1, agents: [{ agent_id: 'A1', agent_name: 'CodeAgent', is_primary_agent: true }] });
+    if (u.pathname === '/v1/agent-center/agents/detail') return send(REAL_DETAIL);
+    if (u.pathname === '/api/v1/user/tokens/balance') {
+      return send({ error_code: '0000', result: { remain_tokens: 750000, used_tokens: 250 } });
+    }
+    if (u.pathname === '/api/v1/gateway/config') {
+      return send({
+        error_code: '0000',
+        result: {
+          endpoint: 'https://benefit-gw.example.com',
+          models: [
+            { model_id: 'GLM-5.2', model_name: 'GLM-5.2', model_alias: 'GLM-5.2' },
+            { model_id: 'Free-Only-Model', model_name: 'Free-Only-Model', model_alias: 'free-only' },
+          ],
+        },
+      });
+    }
+    return send({ error_code: 'APIG.0101' });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const b2 = `http://127.0.0.1:${srv.address().port}`;
+  const info = createAccountInfo({ cfg: { accountInfo: { snapAccess: b2, benefitBase: b2, timeoutMs: 8000 } } });
+  const r = await info.probe(account);
+
+  ok('"0000" 视为成功', r.balanceTotal === 750000, String(r.balanceTotal));
+  ok('余额字段解析', r.balance?.['result.remain_tokens'] === 750000, JSON.stringify(r.balance));
+  ok('无错误', r.errors.length === 0, JSON.stringify(r.errors));
+  ok('gateway config 记录来源', !!r.sources.gatewayConfig, JSON.stringify(Object.keys(r.sources)));
+  ok('benefit 独有模型被并入', r.models.some((m) => m.id === 'Free-Only-Model'), r.models.map((m) => m.id).join(','));
+  ok('benefit 模型标 free', r.models.find((m) => m.id === 'Free-Only-Model')?.free === true);
+  ok('benefit 模型带 endpoint', r.models.find((m) => m.id === 'Free-Only-Model')?.endpoint === 'https://benefit-gw.example.com');
+  ok('同 id 保留 agent-center 价格', r.models.find((m) => m.id === 'GLM-5.2')?.price.input === 8, String(r.models.find((m) => m.id === 'GLM-5.2')?.price.input));
+  ok('模型总数 4', r.modelCount === 4, String(r.modelCount));
+  srv.close();
 }
 
 console.log('\n\x1b[1m[6] 跨账号模型目录\x1b[0m');
