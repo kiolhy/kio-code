@@ -1282,7 +1282,24 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
     authAccount: verdict.ok ? panel.pickAccount(verdict.key?.accountRef ?? null) : panel.pickAccount(null),
   };
 
-  const finishUsage = ({ usage, account, model, status, stream, estimated }) => {
+  // 上游业务错误码 → HTTP 语义。
+  // 除了固定码表，还认 InferHub.xxx.404 这种带后缀的形态（取末尾数字）。
+  const bizErrorToStatus = (code) => {
+    const map = {
+      '4000': 400, '4001': 400, '4002': 400,
+      '4003': 403, '4004': 402, '4006': 429, '4010': 401, '5000': 500,
+    };
+    const s = String(code ?? '');
+    if (map[s]) return map[s];
+    const tail = s.match(/\.(\d{3})$/);
+    if (tail) {
+      const n = Number(tail[1]);
+      if (n >= 400 && n <= 599) return n;
+    }
+    return 502;
+  };
+
+  const finishUsage = ({ usage, account, model, status, stream, estimated, bizError }) => {
     // usage 可能来自不同上游，字段名不完全统一。这里做一次归一化，
     // 避免出现「有 usage 对象但 token 全是 0」——那会让面板显示 0 入 0 出，
     // 看着像没记录，实际是字段名没对上。
@@ -1308,6 +1325,8 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
       estimated: estimated === true || usage?._estimated === true,
       durMs: Date.now() - started,
       stream: !!stream,
+      // 上游在流里夹带的业务错误（HTTP 200 但内容是报错）
+      bizError: bizError ?? null,
     });
     store.recordRequest({
       id: reqId, ts: new Date().toISOString(), method, route: p.includes('messages') ? 'gateway.messages' : 'gateway.chat',
@@ -1322,7 +1341,12 @@ if (p === '/v1/chat/completions' && method === 'POST') {
     if (body.stream === true) {
       const r = await callUpstreamWithRotation({
         body, ctx, stream: true, res,
-        onUsage: ({ usage, account, model, estimated }) => finishUsage({ usage, account, model, status: 200, stream: true, estimated }),
+        onUsage: ({ usage, account, model, estimated, bizError }) => finishUsage({
+          usage, account, model, stream: true, estimated,
+          // 流里夹带的业务错误（模型未注册等）按失败记，别记成 200 成功
+          status: bizError ? bizErrorToStatus(bizError.code) : 200,
+          bizError,
+        }),
       });
       if (r.status !== 200) {
         if (!res.headersSent) {

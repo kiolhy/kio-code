@@ -373,6 +373,102 @@ console.log('\n\x1b[1m[6] 上游整段响应没有 usage chunk\x1b[0m');
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+
+console.log('\n\x1b[1m[7] 流里夹带业务错误（HTTP 200 但内容是报错）\x1b[0m');
+{
+  // 实测上游对未注册的模型返回：
+  //   data:{"text":"[DONE]","error_code":"InferHub.002002009.404",
+  //         "error_msg":"The model is not registered, please request other model"}
+  // HTTP 状态还是 200，没有 choices。以前这种被当成正常数据转发，
+  // 流水记成 200 + in=3090 + out=0，看着像成功其实一个字都没生成。
+  const upstream = http.createServer((req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data:{"text":"[DONE]","error_code":"InferHub.002002009.404","error_msg":"The model is not registered, please request other model"}\n\n');
+      res.end();
+    });
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const upPort = upstream.address().port;
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kio-bizerr-'));
+  fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'data', 'settings.json'),
+    JSON.stringify({
+      panel: { password: null, changed: false },
+      accounts: [{
+        id: 'acc1', name: 'test', enabled: true, region: 'cn',
+        accessKeyId: 'HSTAICLDUR19TESTAK', secretAccessKey: 'SK_TEST_SECRET_0123456789abcdef',
+        securityToken: 'TOK', userName: 'hid_test_user',
+      }],
+      apiKeys: [], proxies: [], settings: {},
+    })
+  );
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+    mode: 'gateway',
+    identity: { agentId: 'a', codeAgentId: 'c', userName: 'u', userId: 'i', domainId: 'd', stationType: 'china' },
+    gateway: { defaultRegion: 'cn', regions: { cn: `http://127.0.0.1:${upPort}` }, chatPath: '/v1/chat/completions', owner: 'codearts', requireKey: false, models: [] },
+    stealth: { enabled: false },
+    capture: { enabled: false },
+  }, null, 2));
+
+  const { spawn } = await import('node:child_process');
+  const probe = http.createServer();
+  await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+  const port = probe.address().port;
+  await new Promise((r) => probe.close(r));
+
+  const srv = spawn(process.execPath, ['server.mjs'], {
+    cwd: path.resolve('.'),
+    env: { ...process.env, MOCK_HUB_CONFIG: path.join(dir, 'config.json'), MOCK_HUB_DATA: path.join(dir, 'data'), PORT: String(port) },
+    stdio: 'ignore',
+  });
+
+  let ready = false;
+  for (let i = 0; i < 60; i++) {
+    try {
+      const h = await fetch(`http://127.0.0.1:${port}/health`);
+      if (h.ok) { ready = true; break; }
+    } catch { /* 还没起 */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  if (!ready) {
+    ok('服务启动', false, '超时');
+  } else {
+    ok('服务启动', true);
+
+    const r = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'DeepSeek-V4.1-Flash-1017', messages: [{ role: 'user', content: '你好' }], stream: true }),
+    });
+    await r.text();
+
+    await new Promise((r2) => setTimeout(r2, 500));
+
+    const usageFile = path.join(dir, 'data', 'usage.jsonl');
+    const rows = fs.existsSync(usageFile)
+      ? fs.readFileSync(usageFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+    ok('落库 1 条', rows.length === 1, String(rows.length));
+    const row = rows[0] ?? {};
+    // 关键回归：不能记成 200 成功
+    ok('状态记成失败（404）', row.status === 404, String(row.status));
+    ok('带 bizError 标记', row.bizError != null, JSON.stringify(row.bizError));
+    ok('bizError.code 保留原始码',
+      String(row.bizError?.code) === 'InferHub.002002009.404', String(row.bizError?.code));
+    ok('bizError.message 有内容',
+      String(row.bizError?.message || '').includes('not registered'), String(row.bizError?.message));
+
+    srv.kill();
+  }
+  upstream.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 console.log('');
 const color = fail === 0 ? '\x1b[32m' : '\x1b[31m';
 console.log(`${color}结果：${pass} 通过\x1b[0m，${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${fail} 失败\x1b[0m`);
