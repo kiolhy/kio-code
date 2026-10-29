@@ -860,7 +860,8 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
       status: status ?? 200,
       promptTokens: usage?.prompt_tokens ?? usage?.input_tokens ?? 0,
       completionTokens: usage?.completion_tokens ?? usage?.output_tokens ?? 0,
-      cachedTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      // 原始 usage 交给面板归一化缓存字段（各家字段名不同，见 lib/cache-stats.mjs）
+      usage,
       durMs: Date.now() - started,
       stream: !!stream,
     });

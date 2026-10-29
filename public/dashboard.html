@@ -171,35 +171,35 @@ dialog h4{margin:0 0 14px;font-size:14px}
         <button data-range="all">全部</button>
       </div>
     </div>
-    <div class="grid g4" id="usageKpi"></div>
+    <div class="grid g4" id="usageKpi" style="grid-template-columns:repeat(auto-fit,minmax(168px,1fr))"></div>
 
     <h3>模型用量</h3>
     <div class="card"><table>
-      <thead><tr><th>模型</th><th class="num">请求</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num">合计</th><th>占比</th></tr></thead>
-      <tbody id="modelBody"><tr><td colspan="6" class="empty">暂无数据</td></tr></tbody>
+      <thead><tr><th>模型</th><th class="num">请求</th><th class="num">输入 Token</th><th class="num">缓存命中</th><th class="num">缓存比例</th><th class="num">输出 Token</th><th class="num">合计</th><th>占比</th></tr></thead>
+      <tbody id="modelBody"><tr><td colspan="8" class="empty">暂无数据</td></tr></tbody>
     </table></div>
 
     <div class="grid g2">
       <div>
         <h3>账号用量</h3>
         <div class="card"><table>
-          <thead><tr><th>账号</th><th class="num">请求</th><th class="num">Token</th></tr></thead>
-          <tbody id="accUsageBody"><tr><td colspan="3" class="empty">暂无数据</td></tr></tbody>
+          <thead><tr><th>账号</th><th class="num">请求</th><th class="num">Token</th><th class="num">缓存比例</th></tr></thead>
+          <tbody id="accUsageBody"><tr><td colspan="4" class="empty">暂无数据</td></tr></tbody>
         </table></div>
       </div>
       <div>
         <h3>Key 用量</h3>
         <div class="card"><table>
-          <thead><tr><th>Key</th><th class="num">请求</th><th class="num">Token</th></tr></thead>
-          <tbody id="keyUsageBody"><tr><td colspan="3" class="empty">暂无数据</td></tr></tbody>
+          <thead><tr><th>Key</th><th class="num">请求</th><th class="num">Token</th><th class="num">缓存比例</th></tr></thead>
+          <tbody id="keyUsageBody"><tr><td colspan="4" class="empty">暂无数据</td></tr></tbody>
         </table></div>
       </div>
     </div>
 
     <h3>请求流水</h3>
     <div class="card"><table>
-      <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">Token</th></tr></thead>
-      <tbody id="usageRecent"><tr><td colspan="7" class="empty">暂无数据</td></tr></tbody>
+      <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">Token</th><th class="num">缓存</th></tr></thead>
+      <tbody id="usageRecent"><tr><td colspan="8" class="empty">暂无数据</td></tr></tbody>
     </table></div>
   </section>
 
@@ -826,26 +826,30 @@ async function loadUsage() {
     const k = j.kpi;
     $('usageKpi').innerHTML = [
       ['请求数', fmt(k.requests), k.errors ? k.errors + ' 个错误' : '无错误'],
-      ['输入 Token', fmtTok(k.promptTokens), '缓存 ' + fmtTok(k.cachedTokens)],
-      ['输出 Token', fmtTok(k.completionTokens), '合计 ' + fmtTok(k.totalTokens)],
+      ['输入 Token', fmtTok(k.promptTokens), '合计 ' + fmtTok(k.totalTokens)],
+      ['缓存命中', k.cachePct == null ? '—' : k.cachePct + '%', '命中 ' + fmtTok(k.cachedTokens) + ' / 输入 ' + fmtTok(k.promptTokens) + (k.cacheWriteTokens ? ' · 写入 ' + fmtTok(k.cacheWriteTokens) : '')],
+      ['输出 Token', fmtTok(k.completionTokens), j.range],
       ['平均耗时', k.avgDurMs + ' ms', j.range],
     ].map(([l, v, s]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('');
 
+    const pct = (v) => (v == null ? '<span class="muted">—</span>' : v + '%');
     const total = Math.max(1, k.totalTokens);
     $('modelBody').innerHTML = (j.models ?? []).length
       ? j.models.map((m) => `<tr>
           <td class="mono">${esc(m.name)}</td>
           <td class="num">${fmt(m.requests)}</td>
           <td class="num">${fmtTok(m.promptTokens)}</td>
+          <td class="num">${fmtTok(m.cachedTokens ?? 0)}</td>
+          <td class="num">${pct(m.cachePct)}</td>
           <td class="num">${fmtTok(m.completionTokens)}</td>
           <td class="num">${fmtTok(m.totalTokens)}</td>
           <td><div class="bar"><i style="width:${Math.round(m.totalTokens/total*100)}%"></i></div></td>
         </tr>`).join('')
-      : '<tr><td colspan="6" class="empty">暂无数据</td></tr>';
+      : '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
 
     const mini = (rows, cols) => rows.length
-      ? rows.map((r) => `<tr><td class="mono">${esc(r.name)}</td><td class="num">${fmt(r.requests)}</td><td class="num">${fmtTok(r.totalTokens)}</td></tr>`).join('')
-      : `<tr><td colspan="3" class="empty">暂无数据</td></tr>`;
+      ? rows.map((r) => `<tr><td class="mono">${esc(r.name)}</td><td class="num">${fmt(r.requests)}</td><td class="num">${fmtTok(r.totalTokens)}</td><td class="num">${pct(r.cachePct)}</td></tr>`).join('')
+      : `<tr><td colspan="4" class="empty">暂无数据</td></tr>`;
     $('accUsageBody').innerHTML = mini(j.accounts ?? []);
     $('keyUsageBody').innerHTML = mini(j.keys ?? []);
 
@@ -858,8 +862,9 @@ async function loadUsage() {
           <td class="num">${r.status >= 400 ? '<span class="pill err">' + r.status + '</span>' : '<span class="pill ok">' + r.status + '</span>'}</td>
           <td class="num">${r.durMs} ms</td>
           <td class="num">${fmtTok(r.promptTokens + r.completionTokens)}</td>
+          <td class="num">${pct(r.cachePct)}${r.cachedTokens ? `<div class="sub muted">${fmtTok(r.cachedTokens)}</div>` : ''}</td>
         </tr>`).join('')
-      : '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+      : '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
   } catch (e) { toast(e.message, true); }
 }
 

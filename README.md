@@ -512,6 +512,7 @@ mock-hub/
 │   ├── oauth.mjs           账号池授权添加：OAuth 授权码 / 设备码 / auth.json → STS 临时凭据
 │   ├── codearts-auth.mjs   码道真实登录协议（反编译还原：PKCE + DPoP + ticket）
 │   ├── account-info.mjs    账号信息探测：可用模型 / 每模型积分 / 剩余积分
+│   ├── cache-stats.mjs     缓存命中归一化（OpenAI/DeepSeek/Anthropic 各家字段）
 │   ├── dpop.mjs            DPoP（RFC 9449）：ES256 密钥对 + 证明 JWT
 │   ├── updater.mjs         在线更新：检查 / 应用 / 回滚
 │   ├── tar.mjs             最小 tar.gz 读写（更新包解包/打包）
@@ -536,6 +537,7 @@ mock-hub/
 │   ├── test-oauth.mjs      账号池授权添加 56 项验证（含 DPoP / 设备码 / auth.json）
 │   ├── test-codearts-auth.mjs  码道真实登录协议 57 项验证（PKCE/DPoP/ticket/续期）
 │   ├── test-account-info.mjs   账号信息探测 28 项验证（余额/模型/积分/签名）
+│   ├── test-cache.mjs          缓存命中统计 40 项验证（8 种 usage 形状/比例/聚合）
 │   ├── test-capture.mjs    遥测捕获 13 项验证（自签证书 / OTLP / 来源域名）
 │   ├── egress-proxy.mjs    出站代理：不用管理员权限替代 hosts，拦截+捕获
 │   ├── analyze-request.mjs 拆解一条请求：结构 / 工具清单 / 体积分布
