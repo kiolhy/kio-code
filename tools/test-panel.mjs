@@ -209,6 +209,9 @@ console.log('\n\x1b[1m[5] 在线更新与 GitHub 状态\x1b[0m');
 
   const cb = await req('/oauth/callback');
   ok('oauth 回调缺参报错（无需登录）', cb.status === 400, `status=${cb.status}`);
+
+  const imp = await req('/panel/api/accounts/import-auth', { method: 'POST', headers: H, body: JSON.stringify({ authJson: 'not-json' }) });
+  ok('导入 auth.json 坏 JSON 明确报错', imp.status === 400 && imp.body?.error?.code === 'bad_json', `${imp.status}/${imp.body?.error?.code}`);
 }
 
 console.log('\n\x1b[1m[6] 设置与清理\x1b[0m');

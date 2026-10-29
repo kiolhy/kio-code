@@ -560,9 +560,22 @@ async function handlePanelApi(req, res, url, method, reqId, started) {  const p 
       return void sendJson(res, 200, { ok: true, ...r });
     }
 
+    if (p === '/oauth/poll' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+      const r = await oauth.pollDevice({ deviceCode: body.deviceCode });
+      return void sendJson(res, 200, { ok: true, ...r });
+    }
+
     if (p === '/oauth/status' && method === 'GET') {
       const state = url.searchParams.get('state');
       return void sendJson(res, 200, { ok: true, ...oauth.status({ state }) });
+    }
+
+    if (p === '/accounts/import-auth' && method === 'POST') {
+      const body = JSON.parse((await readBody(req, 262144)).toString('utf8') || '{}');
+      if (!body.authJson) return void sendJson(res, 400, { error: { code: 'missing_auth_json', message: '缺少 authJson' } });
+      const r = oauth.importAuthJson(body.authJson);
+      return void sendJson(res, 200, { ok: true, ...r });
     }
 
     /* ---- 运行日志 ---- */

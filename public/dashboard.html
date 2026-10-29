@@ -130,6 +130,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
       <div class="row" style="margin-bottom:12px">
         <button class="primary" onclick="openAccount()">+ 添加账号</button>
         <button onclick="oauthAdd()">🔗 授权添加</button>
+        <button onclick="importAuth()">📥 导入 auth.json</button>
         <button onclick="loadAccounts()">刷新</button>
         <span class="spacer"></span>
         <span class="muted" id="accSummary"></span>
@@ -461,6 +462,7 @@ async function oauthAdd() {
   try {
     const j = await api('/oauth/start', { method: 'POST', body: '{}' });
     window.open(j.authorizeUrl, '_blank');
+    const codeLine = j.userCode ? `<div class="hint" style="margin-top:6px">登录码：<b class="mono">${esc(j.userCode)}</b>（已复制到剪贴板）</div>` : '';
     box.style.display = 'block';
     box.innerHTML = `<div class="card" style="padding:12px">
       <div class="row">
@@ -468,9 +470,12 @@ async function oauthAdd() {
         <span class="spacer"></span>
         <a href="${esc(j.authorizeUrl)}" target="_blank" rel="noopener">重新打开链接</a>
       </div>
+      ${codeLine}
       <div class="hint" style="margin-top:6px" id="oauthPoll">等待授权…</div>
     </div>`;
-    pollOAuth(j.state, 0);
+    if (j.userCode && navigator.clipboard) navigator.clipboard.writeText(j.userCode).catch(() => {});
+    if (j.deviceCode) pollOAuthDevice(j.deviceCode, 0, Number(j.interval) || 5);
+    else pollOAuth(j.state, 0);
   } catch (e) {
     box.style.display = 'block';
     box.innerHTML = `<div class="hint" style="color:#f85149">${esc(e.message)}</div>`;
@@ -495,6 +500,37 @@ async function pollOAuth(state, n) {
     const p = $('oauthPoll');
     if (p) p.textContent = '查询失败：' + e.message;
   }
+}
+
+async function pollOAuthDevice(deviceCode, n, interval) {
+  clearTimeout(oauthTimer);
+  try {
+    const j = await api('/oauth/poll', { method: 'POST', body: JSON.stringify({ deviceCode }) });
+    const p = $('oauthPoll');
+    if (j.status === 'success' || j.done) {
+      if (p) p.textContent = '✅ 已添加账号 ' + (j.name || '');
+      toast('授权账号已入库');
+      loadAccounts();
+      return;
+    }
+    if (n > 120) { if (p) p.textContent = '授权超时未完成，可重新发起'; return; }
+    if (p) p.textContent = '等待授权…（' + n + 's）';
+    oauthTimer = setTimeout(() => pollOAuthDevice(deviceCode, n + interval, interval), interval * 1000);
+  } catch (e) {
+    const p = $('oauthPoll');
+    if (p) p.textContent = '查询失败：' + e.message;
+  }
+}
+
+/* ---------------- 导入原版 CLI 的 auth.json ---------------- */
+function importAuth() {
+  openDialog('导入 auth.json（原版 CLI 登录产物）', [
+    { k: 'authJson', label: '粘贴 %USERPROFILE%\\.codeartsdoer\\cli-data\\auth.json 的完整内容', type: 'textarea', value: '', ph: '{ "inferhub-provider": { "access": "...", ... } }' },
+  ], async (v) => {
+    const j = await api('/accounts/import-auth', { method: 'POST', body: JSON.stringify({ authJson: v.authJson }) });
+    toast('已导入账号 ' + (j.name || ''));
+    loadAccounts();
+  });
 }
 
 function openAccount(pre) {
@@ -861,6 +897,10 @@ function openDialog(title, fields, onSubmit) {
       return `<div class="field"><label>${esc(f.label)}</label><select data-k="${f.k}">` +
         f.options.map(([v, t]) => `<option value="${esc(v)}"${v === f.value ? ' selected' : ''}>${esc(t)}</option>`).join('') +
         '</select></div>';
+    }
+    if (f.type === 'textarea') {
+      return `<div class="field"><label>${esc(f.label)}</label>
+        <textarea data-k="${f.k}" rows="7" placeholder="${esc(f.ph ?? '')}" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px">${esc(f.value ?? '')}</textarea></div>`;
     }
     return `<div class="field"><label>${esc(f.label)}</label>
       <input data-k="${f.k}" value="${esc(f.value ?? '')}" placeholder="${esc(f.ph ?? '')}"></div>`;

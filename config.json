@@ -223,6 +223,8 @@
     "accountNamePrefix": "授权账号",
     "stateTtlMs": 600000,
     "proxy": "",
+    "deviceAuthorizationUrl": "",
+    "cliAuthPageUrl": "https://codearts.huaweicloud.com/portal/settings/cli-auth",
     "sts": {
       "endpoint": "https://sts.cn-north-4.myhuaweicloud.com/v1/{domainId}/agency/assume-role",
       "domainId": "",
