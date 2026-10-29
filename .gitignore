@@ -26,3 +26,5 @@ config.capture-ci.json
 
 # 构建信息（镜像构建 / 在线更新时生成）
 build-info.json
+
+.git-msg.txt
