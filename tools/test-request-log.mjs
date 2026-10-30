@@ -64,6 +64,8 @@ const mk = (i, over = {}) => ({
   creditTier: null,
   stream: false,
   durMs: 1000 + i * 100,
+  // 首字延迟：故意让偶数条有、奇数条没有，验证 null 的处理
+  ttftMs: i % 2 === 0 ? 100 + i * 10 : null,
   ...over,
 });
 
@@ -204,6 +206,19 @@ console.log('\n\x1b[1m[5] 排序\x1b[0m');
   const byTs = panel.requestLog({ range: 'all', sort: 'ts', order: 'desc', size: 100 });
   const tsList = byTs.rows.map((r) => new Date(r.ts).getTime());
   ok('按时间降序', tsList.every((t, i) => i === 0 || tsList[i - 1] >= t));
+
+  // 首字延迟（TTFT）
+  const byTtft = panel.requestLog({ range: 'all', sort: 'ttftMs', order: 'desc', size: 100 });
+  const ttfts = byTtft.rows.map((r) => r.ttftMs);
+  ok('按首字降序：有值的排前面', ttfts.findIndex((v) => v == null) === -1 || ttfts.findIndex((v) => v == null) > 0,
+    ttfts.slice(0, 4).join(','));
+  const known = ttfts.filter((v) => v != null);
+  ok('按首字降序：有值的严格递减', known.every((v, i) => i === 0 || known[i - 1] >= v));
+  ok('没有首字数据的排在最后', ttfts.slice(known.length).every((v) => v == null));
+  const rowTtft = panel.requestLog({ range: 'all', size: 100 }).rows.filter((r) => r.ttftMs != null);
+  ok('rows 里带 ttftMs', rowTtft.length === 6, String(rowTtft.length));
+  ok('汇总带 avgTtftMs', panel.requestLog({ range: 'all', size: 100 }).summary.avgTtftMs > 0,
+    String(panel.requestLog({ range: 'all', size: 100 }).summary.avgTtftMs));
 
   const bad = panel.requestLog({ range: 'all', sort: 'nonsense', size: 5 });
   ok('未知排序字段回落成时间', bad.rows.length === 5);

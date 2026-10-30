@@ -79,14 +79,28 @@ const promptTokens = estimatePromptTokens(body);
 
 请求流水现在每列都分开：
 
-| 时间 | 方法 | 路径 | 模型 | 状态 | 耗时 | 输入 | 输出 | 缓存 | 积分 |
-|---|---|---|---|---|---|---|---|---|---|
-| 16:45:40 | POST | /v1/chat/completions | DeepSeek-V4.1-Flash-1017 估算 | 200 | 2161 ms | 10 入 | 5 出 | — | 0.0001 |
+| 时间 | 方法 | 路径 | 模型 | 状态 | 首字 | 耗时 | 输入 | 输出 | 缓存 | 积分 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 16:45:40 | POST | /v1/chat/completions | DeepSeek-V4.1-Flash-1017 估算 | 200 | 412 ms | 2161 ms | 10 入 | 5 出 | — | 0.0001 |
 
 - 模型名后面带「估算」标签 = 上游没给 usage，本地算的
 - 输入 / 输出分两列，不再合并成「Token」
 - 缓存列显示命中比例和命中 token 数
 - 积分按真实价格算
+- **首字** = 从请求进来，到第一条内容吐出的耗时（TTFT）；**耗时** = 整个请求从进来到结束
+
+### 首字延迟（TTFT）的口径
+
+| 场景 | 取值 |
+|---|---|
+| 流式 | 第一条 **带内容** 的增量到达（空的 `{delta:{role}}` 不算）；推理模型先吐 `reasoning_content` 的也算 |
+| 非流式 | 上游 **响应头** 到达的时间（body 是一次性读完的，头到手就等于首字节到手） |
+| 上游直接报错、一个字节都没回 | `null`，面板显示 `—` |
+
+字段名是 `ttftMs`，和 `durMs` 一起落在每条流水上；汇总里有 `avgTtftMs` 和 `ttftSamples`（只对有首字数据的请求求平均）。
+
+空 role 增量不能算首字 —— 上游经常先发一个 `{"delta":{"role":"assistant"}}`，
+按「收到第一个 chunk」计时会把首字算成 0，看不出模型到底想多久。
 
 ## 估算精度
 
@@ -104,6 +118,8 @@ const promptTokens = estimatePromptTokens(body);
 - `lib/gateway.mjs`
   - `buildUpstreamBody()` — 注入 `stream_options.include_usage`
   - `forwardChatStream()` — 旁路累计输出字符，区分 CJK
+  - `forwardChatStream()` / `forwardChatOnce()` — 记 `firstByteAt` / `firstTokenAt` 给首字计时用
+  - `requestTimeout()` — 非流式 300s 兜底，流式另有 `streamIdleMs` 控空闲
   - `estimateTokensFromChars()` — 字符数 → token
   - `estimatePromptTokens()` — 请求体 → 输入 token
   - `ensureUsage()` — 非流式兜底

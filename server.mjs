@@ -1360,7 +1360,7 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
     return 502;
   };
 
-  const finishUsage = ({ usage, account, model, status, stream, estimated, bizError }) => {
+  const finishUsage = ({ usage, account, model, status, stream, estimated, bizError, firstByteAt, firstTokenAt }) => {
     // usage 可能来自不同上游，字段名不完全统一。这里做一次归一化，
     // 避免出现「有 usage 对象但 token 全是 0」——那会让面板显示 0 入 0 出，
     // 看着像没记录，实际是字段名没对上。
@@ -1370,6 +1370,18 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
       numOr(u?.prompt_tokens) ?? numOr(u?.input_tokens) ?? numOr(u?.promptTokens) ?? numOr(u?.inputTokens) ?? 0;
     const completionTokens =
       numOr(u?.completion_tokens) ?? numOr(u?.output_tokens) ?? numOr(u?.completionTokens) ?? numOr(u?.outputTokens) ?? 0;
+
+    const endedAt = Date.now();
+    const durMs = endedAt - started;
+    // 首字延迟（TTFT），相对请求进来的时刻：
+    //   流式   → 第一条带内容的增量到达（推理模型先吐 reasoning_content 也算）
+    //   非流式 → 响应头到达（body 一次性读完，头到手就等于首字节到手）
+    //   上游直接报错、一个字节都没回 → null，面板显示 —
+    const ttftMs = Number.isFinite(firstTokenAt)
+      ? Math.max(0, firstTokenAt - started)
+      : Number.isFinite(firstByteAt)
+        ? Math.max(0, firstByteAt - started)
+        : null;
 
     panel.recordUsage({
       keyId: ctx.authKey?.id ?? null,
@@ -1384,14 +1396,15 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
       // 原始 usage 交给面板归一化缓存字段（各家字段名不同，见 lib/cache-stats.mjs）
       usage,
       estimated: estimated === true || usage?._estimated === true,
-      durMs: Date.now() - started,
+      durMs,
+      ttftMs,
       stream: !!stream,
       // 上游在流里夹带的业务错误（HTTP 200 但内容是报错）
       bizError: bizError ?? null,
     });
     store.recordRequest({
       id: reqId, ts: new Date().toISOString(), method, route: p.includes('messages') ? 'gateway.messages' : 'gateway.chat',
-      path: url.pathname, status: status ?? 200, durMs: Date.now() - started, mode: 'gateway',
+      path: url.pathname, status: status ?? 200, durMs, ttftMs, mode: 'gateway',
       reqBytes: rawBody.length, resBytes: 0, host: cfg.gateway?.regions?.cn ?? '',
     }, null);
   };
@@ -1402,8 +1415,8 @@ if (p === '/v1/chat/completions' && method === 'POST') {
     if (body.stream === true) {
       const r = await callUpstreamWithRotation({
         body, ctx, stream: true, res,
-        onUsage: ({ usage, account, model, estimated, bizError }) => finishUsage({
-          usage, account, model, stream: true, estimated,
+        onUsage: ({ usage, account, model, estimated, bizError, firstByteAt, firstTokenAt }) => finishUsage({
+          usage, account, model, stream: true, estimated, firstByteAt, firstTokenAt,
           // 流里夹带的业务错误（模型未注册等）按失败记，别记成 200 成功
           status: bizError ? bizErrorToStatus(bizError.code) : 200,
           bizError,
@@ -1414,7 +1427,7 @@ if (p === '/v1/chat/completions' && method === 'POST') {
           return void sendJson(res, r.status, { error: { code: 'upstream_error', message: r.errorText?.slice(0, 2000) } });
         }
         res.end();
-        finishUsage({ usage: null, account: r.account, model: body?.model, status: r.status, stream: true });
+        finishUsage({ usage: null, account: r.account, model: body?.model, status: r.status, stream: true, firstByteAt: r.firstByteAt });
       }
       return;
     }
@@ -1422,7 +1435,7 @@ if (p === '/v1/chat/completions' && method === 'POST') {
     const r = await callUpstreamWithRotation({ body, ctx, stream: false });
     // 上游业务错误（200 + error_code）已在 forwardChatOnce 里翻成真实状态码
     if (r.bizError) {
-      finishUsage({ usage: null, account: r.account, model: body?.model, status: r.status, stream: false });
+      finishUsage({ usage: null, account: r.account, model: body?.model, status: r.status, stream: false, firstByteAt: r.firstByteAt });
       return void sendJson(res, r.status, {
         error: {
           code: `upstream_${r.bizError.code}`,
@@ -1440,7 +1453,7 @@ if (p === '/v1/chat/completions' && method === 'POST') {
       });
     }
     const { usage: u2, estimated } = ensureUsage(json?.usage, { requestBody: body, responseJson: json });
-    finishUsage({ usage: u2, account: r.account, model: body?.model, status: r.status, stream: false, estimated });
+    finishUsage({ usage: u2, account: r.account, model: body?.model, status: r.status, stream: false, estimated, firstByteAt: r.firstByteAt });
     return void sendJson(res, r.status, json);
   } catch (e) {
     return void sendGatewayError(res, e);
@@ -1461,7 +1474,7 @@ if (p === '/v1/messages' && method === 'POST') {
     } catch {
       return void sendJson(res, 502, { error: { code: 'bad_upstream_response', message: r.body.toString('utf8').slice(0, 2000) } });
     }
-    finishUsage({ usage: json?.usage, account: r.account, model: oaBody.model, status: r.status, stream: false });
+    finishUsage({ usage: json?.usage, account: r.account, model: oaBody.model, status: r.status, stream: false, firstByteAt: r.firstByteAt });
     return void sendJson(res, r.status, openAIToAnthropic(json));
   } catch (e) {
     return void sendGatewayError(res, e);
@@ -1488,6 +1501,9 @@ if (p === '/v1/responses' && method === 'POST') {
       let text = '';
       let reasoning = '';
       let finalUsage = null;
+      // 首字时刻：第一条带内容的增量到达时记一次
+      let firstTokenAt = null;
+      let firstByteAt = null;
       // SSE 分片可能把一行 data: 从中间切断，必须留 carry 缓冲，
       // 否则被切断的增量直接丢掉（表现为 output_text 空或残缺）
       let carry = '';
@@ -1507,6 +1523,14 @@ if (p === '/v1/responses' && method === 'POST') {
         // 只读 content 会在小 max_tokens 时拿到空串
         if (typeof d.reasoning_content === 'string') reasoning += d.reasoning_content;
         if (typeof d.content === 'string') text += d.content;
+        if (
+          firstTokenAt == null &&
+          ((typeof d.content === 'string' && d.content) ||
+            (typeof d.reasoning_content === 'string' && d.reasoning_content) ||
+            (Array.isArray(d.tool_calls) && d.tool_calls.length))
+        ) {
+          firstTokenAt = Date.now();
+        }
         if (j?.usage) finalUsage = j.usage;
       };
       try {
@@ -1530,8 +1554,9 @@ if (p === '/v1/responses' && method === 'POST') {
             },
             on() {},
           },
-          onUsage: ({ usage }) => {
+          onUsage: ({ usage, firstByteAt: fb }) => {
             if (usage) finalUsage = usage;
+            if (fb != null) firstByteAt = fb;
           },
         });
         // 收尾：最后一个分片可能没有换行结尾
@@ -1561,14 +1586,14 @@ if (p === '/v1/responses' && method === 'POST') {
       for (const e of responsesStreamEvents({ responseId: respId, model: oaBody.model, text, reasoning, usage })) {
         send(e.event, e.data);
       }
-      finishUsage({ usage: finalUsage, account: null, model: oaBody.model, status: 200, stream: true });
+      finishUsage({ usage: finalUsage, account: null, model: oaBody.model, status: 200, stream: true, firstByteAt, firstTokenAt });
       return void res.end();
     }
 
     // 非流式
     const r = await callUpstreamWithRotation({ body: oaBody, ctx, stream: false });
     if (r.bizError) {
-      finishUsage({ usage: null, account: r.account, model: oaBody.model, status: r.status, stream: false });
+      finishUsage({ usage: null, account: r.account, model: oaBody.model, status: r.status, stream: false, firstByteAt: r.firstByteAt });
       return void sendJson(res, r.status, {
         error: {
           code: `upstream_${r.bizError.code}`,
@@ -1586,7 +1611,7 @@ if (p === '/v1/responses' && method === 'POST') {
       });
     }
     const { usage: u2, estimated } = ensureUsage(json?.usage, { requestBody: oaBody, responseJson: json });
-    finishUsage({ usage: u2, account: r.account, model: oaBody.model, status: r.status, stream: false, estimated });
+    finishUsage({ usage: u2, account: r.account, model: oaBody.model, status: r.status, stream: false, estimated, firstByteAt: r.firstByteAt });
     return void sendJson(res, r.status, openAIToResponses(json, body));
   } catch (e) {
     return void sendGatewayError(res, e);

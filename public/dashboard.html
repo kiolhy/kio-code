@@ -203,8 +203,8 @@ dialog h4{margin:0 0 14px;font-size:14px}
 
     <h3>请求流水</h3>
     <div class="card"><table>
-      <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">耗时</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存</th><th class="num">积分</th></tr></thead>
-      <tbody id="usageRecent"><tr><td colspan="10" class="empty">暂无数据</td></tr></tbody>
+      <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>模型</th><th class="num">状态</th><th class="num">首字</th><th class="num">耗时</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存</th><th class="num">积分</th></tr></thead>
+      <tbody id="usageRecent"><tr><td colspan="11" class="empty">暂无数据</td></tr></tbody>
     </table></div>
   </section>
 
@@ -258,13 +258,14 @@ dialog h4{margin:0 0 14px;font-size:14px}
       <thead><tr>
         <th style="cursor:pointer" onclick="reqSortBy('ts')">时间 ⇅</th><th>模型</th><th>账号</th><th>Key</th>
         <th class="num">状态</th>
+        <th class="num" style="cursor:pointer" onclick="reqSortBy('ttftMs')" title="从请求进来，到第一条内容吐出（推理模型算 reasoning 首字）">首字 ⇅</th>
         <th class="num" style="cursor:pointer" onclick="reqSortBy('durMs')">耗时 ⇅</th>
         <th class="num" style="cursor:pointer" onclick="reqSortBy('totalTokens')">输入 ⇅</th>
         <th class="num">输出</th>
         <th class="num">缓存命中</th><th class="num" style="cursor:pointer" onclick="reqSortBy('cachePct')">缓存比例 ⇅</th>
         <th class="num" style="cursor:pointer" onclick="reqSortBy('credit')">消耗积分 ⇅</th><th class="num">省下</th>
       </tr></thead>
-      <tbody id="reqBody"><tr><td colspan="12" class="empty">加载中…</td></tr></tbody>
+      <tbody id="reqBody"><tr><td colspan="13" class="empty">加载中…</td></tr></tbody>
     </table></div>
 
     <div class="row" style="justify-content:space-between">
@@ -583,6 +584,14 @@ const fmtTok = (n) => {
   if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
   if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
   return String(n);
+};
+// 毫秒：超过 1 秒换成秒，读数比一串 5 位数舒服
+const fmtMs = (n) => {
+  if (n == null || !Number.isFinite(Number(n))) return '<span class="muted">—</span>';
+  const v = Math.round(Number(n));
+  if (v < 0) return '<span class="muted">—</span>';
+  if (v >= 10000) return (v / 1000).toFixed(1) + ' s';
+  return v + ' ms';
 };
 // 积分：单次消耗通常很小，按量级选小数位
 const fmtCredit = (n) => {
@@ -1422,6 +1431,7 @@ async function loadRequests() {
       ['缓存命中', s.cachePct == null ? '—' : s.cachePct + '%', `${fmtTok(s.cachedTokens)} / ${fmtTok(s.promptTokens)}`],
       ['缓存省下', fmtCredit(s.creditSaved), '相比全部按原价'],
       ['输出 Token', fmtTok(s.completionTokens), '平均 ' + (s.avgDurMs ?? 0) + ' ms'],
+      ['平均首字', fmtMs(s.avgTtftMs), s.ttftSamples ? `${fmt(s.ttftSamples)} 条有首字数据` : '暂无首字数据'],
       ['每 Mtoken', s.creditPerKTok == null ? '—' : fmtCredit(s.creditPerKTok * 1000), '平均积分成本'],
     ].map(([l, v, sub]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join('');
 
@@ -1491,6 +1501,7 @@ async function loadRequests() {
             <td class="mono muted">${esc(r.accountName || '—')}</td>
             <td class="mono muted">${esc(r.keyName || '—')}</td>
             <td class="num">${ok ? `<span class="pill ok">${r.status}</span>` : `<span class="pill err">${r.status}</span>`}</td>
+            <td class="num" title="${r.ttftMs == null ? '没有首字数据（上游未返回内容）' : '首字延迟'}">${fmtMs(r.ttftMs)}</td>
             <td class="num">${r.durMs} ms</td>
             <td class="num">${fmtTok(r.promptTokens)}</td>
             <td class="num">${fmtTok(r.completionTokens)}</td>
@@ -1500,7 +1511,7 @@ async function loadRequests() {
             <td class="num muted">${r.creditSaved ? fmtCredit(r.creditSaved) : '—'}</td>
           </tr>`;
         }).join('')
-      : '<tr><td colspan="12" class="empty">没有匹配的请求</td></tr>';
+      : '<tr><td colspan="13" class="empty">没有匹配的请求</td></tr>';
 
     $('reqMeta').textContent = `共 ${fmt(j.total)} 条，第 ${j.page} / ${j.pages} 页，每页 ${j.size} 条`;
     $('reqPageInfo').textContent = `${j.page} / ${j.pages}`;
@@ -1518,6 +1529,7 @@ async function loadUsage() {
       ['缓存命中', k.cachePct == null ? '—' : k.cachePct + '%', '命中 ' + fmtTok(k.cachedTokens) + ' / 输入 ' + fmtTok(k.promptTokens) + (k.cacheWriteTokens ? ' · 写入 ' + fmtTok(k.cacheWriteTokens) : '')],
       ['缓存省下', fmtCredit(k.creditSaved), '相比全部按原价'],
       ['输出 Token', fmtTok(k.completionTokens), j.range],
+      ['平均首字', fmtMs(k.avgTtftMs), k.ttftSamples ? `${fmt(k.ttftSamples)} 条有首字数据` : '暂无首字数据'],
       ['平均耗时', k.avgDurMs + ' ms', j.range],
     ].map(([l, v, s]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('');
 
@@ -1554,6 +1566,7 @@ async function loadUsage() {
           <td class="mono">/v1/chat/completions</td>
           <td class="mono">${esc(r.model)}${est}</td>
           <td class="num">${r.status >= 400 ? '<span class="pill err">' + r.status + '</span>' : '<span class="pill ok">' + r.status + '</span>'}</td>
+          <td class="num" title="首字延迟">${fmtMs(r.ttftMs)}</td>
           <td class="num">${r.durMs} ms</td>
           <td class="num">${fmtTok(inTok)}<div class="sub muted">入</div></td>
           <td class="num">${fmtTok(outTok)}<div class="sub muted">出</div></td>
@@ -1561,7 +1574,7 @@ async function loadUsage() {
           <td class="num">${fmtCredit(r.credit)}</td>
         </tr>`;
         }).join('')
-      : '<tr><td colspan="10" class="empty">暂无数据</td></tr>';
+      : '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
   } catch (e) { toast(e.message, true); }
 }
 

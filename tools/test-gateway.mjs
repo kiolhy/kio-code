@@ -31,6 +31,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // slow-model 挂住的时长：要比排队预算长，
 // 才能让「所有账号都满」那个用例真的等到超时
 const SLOW_MS = 2500;
+// slow-first 的节奏：TTFT_MS 后吐第一个内容片，再等 TAIL_MS 才结束
+const TTFT_MS = 600;
+const TAIL_MS = 500;
 
 /* ---------- 假上游 ---------- */
 const seen = { requests: [] };
@@ -69,6 +72,22 @@ const upstream = http.createServer((req, res) => {
           })
         );
       }, SLOW_MS);
+      return;
+    }
+
+    // 首字测试用：先发一个空的 role 片（不算首字），停 TTFT_MS 才吐内容，
+    // 再停 TAIL_MS 才结束 —— 这样首字延迟和总耗时能明显区分开
+    if (body?.model === 'slow-first' && body.stream) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ id: 'sf', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] })}\n\n`);
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({ id: 'sf', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: '慢' }, finish_reason: null }] })}\n\n`);
+        setTimeout(() => {
+          res.write(`data: ${JSON.stringify({ id: 'sf', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } })}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        }, TAIL_MS);
+      }, TTFT_MS);
       return;
     }
 
@@ -296,6 +315,77 @@ try {
   ok('标注上游地址', !!r2.headers.get('x-kio-upstream'), r2.headers.get('x-kio-upstream') ?? '');
   ok('流式请求复用同一会话 id', seen.requests[0]?.headers['x-ot-session-id'] === up1?.headers['x-ot-session-id'], String(seen.requests[0]?.headers['x-ot-session-id'] ?? ''));
   ok('流式请求换了 trace id', seen.requests[0]?.headers['x-ot-trace-id'] !== up1?.headers['x-ot-trace-id']);
+
+  /* ---------- 首字 / 耗时 落账 ---------- */
+  console.log('\n\x1b[1m[5b] 每次请求都记首字和耗时\x1b[0m');
+  {
+    // 让流式响应稍微停一下再吐第一个内容片，这样首字一定大于 0 且明显小于总耗时
+    const j0 = await (await fetch(`${GW}/panel/api/usage?range=today`, { headers: H })).json();
+    const before = j0?.recent?.length ?? 0;
+
+    const rs = await fetch(`${GW}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({ model: 'mock-thinking', stream: true, messages: [{ role: 'user', content: '首字测试' }] }),
+    });
+    await rs.text(); // 流读完，账才落
+
+    // 非流式也走一遍：没有流式增量时首字退回「响应头到达」
+    const rn = await fetch(`${GW}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({ model: 'mock-thinking', messages: [{ role: 'user', content: '非流式首字' }] }),
+    });
+    await rn.json();
+
+    const j1 = await (await fetch(`${GW}/panel/api/usage?range=today`, { headers: H })).json();
+    const added = (j1?.recent ?? []).slice(0, (j1?.recent?.length ?? 0) - before);
+    ok('新增了 2 条流水', added.length === 2, String(added.length));
+
+    const st = added.find((r) => r.stream === true);
+    const ns = added.find((r) => r.stream !== true);
+    ok('流式流水有 ttftMs', typeof st?.ttftMs === 'number', String(st?.ttftMs));
+    ok('流式 ttftMs >= 0', (st?.ttftMs ?? -1) >= 0, String(st?.ttftMs));
+    ok('流式 ttftMs 不大于总耗时', (st?.ttftMs ?? 0) <= (st?.durMs ?? 0), `${st?.ttftMs} vs ${st?.durMs}`);
+    ok('流式总耗时 > 0', (st?.durMs ?? 0) > 0, String(st?.durMs));
+
+    ok('非流式流水也有 ttftMs', typeof ns?.ttftMs === 'number', String(ns?.ttftMs));
+    ok('非流式 ttftMs 不大于总耗时', (ns?.ttftMs ?? 0) <= (ns?.durMs ?? 0), `${ns?.ttftMs} vs ${ns?.durMs}`);
+
+    ok('KPI 有平均首字', typeof j1?.kpi?.avgTtftMs === 'number', String(j1?.kpi?.avgTtftMs));
+    ok('KPI 首字样本数 > 0', (j1?.kpi?.ttftSamples ?? 0) > 0, String(j1?.kpi?.ttftSamples));
+
+    // 请求日志那一侧也要有
+    const jl = await (await fetch(`${GW}/panel/api/requests?range=today&sort=ttftMs&order=desc&size=10`, { headers: H })).json();
+    ok('请求日志按首字排序不报错', Array.isArray(jl?.rows), String(jl?.rows?.length));
+    ok('请求日志 summary 有 avgTtftMs', jl?.summary?.avgTtftMs != null, String(jl?.summary?.avgTtftMs));
+  }
+
+  /* ---------- 首字 vs 总耗时确实分开计 ---------- */
+  console.log('\n\x1b[1m[5c] 首字延迟和总耗时是两个数\x1b[0m');
+  {
+    // slow-first：空的 role 片立刻发，600ms 后才吐内容，再 500ms 才结束。
+    // 首字应该 ≈600ms（不是 0，也不是 1100ms），总耗时应该 ≈1100ms。
+    const j0 = await (await fetch(`${GW}/panel/api/usage?range=today`, { headers: H })).json();
+    const before = j0?.recent?.length ?? 0;
+
+    const rf = await fetch(`${GW}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({ model: 'slow-first', stream: true, messages: [{ role: 'user', content: '首字' }] }),
+    });
+    await rf.text();
+
+    const j1 = await (await fetch(`${GW}/panel/api/usage?range=today`, { headers: H })).json();
+    const row = (j1?.recent ?? []).find((r) => r.model === 'slow-first');
+    ok('slow-first 落了流水', !!row, String((j1?.recent ?? []).length - before));
+
+    // 空的 role 片不能算首字：若算成 0，这条会掉到 100ms 以下
+    ok('首字 ≈ 第一个内容片的时间（不是 0）', (row?.ttftMs ?? 0) >= TTFT_MS - 150, `${row?.ttftMs}ms`);
+    ok('首字没被结尾拖长', (row?.ttftMs ?? 0) < TTFT_MS + TAIL_MS, `${row?.ttftMs}ms`);
+    ok('总耗时 ≈ 首字 + 尾巴', (row?.durMs ?? 0) >= TTFT_MS + TAIL_MS - 150, `${row?.durMs}ms`);
+    ok('首字明显小于总耗时', (row?.ttftMs ?? 0) < (row?.durMs ?? 0), `${row?.ttftMs} vs ${row?.durMs}`);
+  }
 
   /* ---------- Anthropic 入口 ---------- */
   console.log('\n\x1b[1m[6] Anthropic /v1/messages 转换\x1b[0m');
