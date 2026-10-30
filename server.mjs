@@ -18,6 +18,9 @@ import {
   forwardRawOnce,
   anthropicToOpenAI,
   openAIToAnthropic,
+  responsesToOpenAI,
+  openAIToResponses,
+  responsesStreamEvents,
   pickCredentials,
   ensureUsage,
 } from './lib/gateway.mjs';
@@ -1418,11 +1421,128 @@ if (p === '/v1/messages' && method === 'POST') {
   }
 }
 
+/* ---- OpenAI Responses API ---- */
+if (p === '/v1/responses' && method === 'POST') {
+  try {
+    const oaBody = responsesToOpenAI(body);
+    const respId = `resp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+    // 流式：上游开流拿 SSE，这里再翻译成 Responses 的事件序列
+    if (body.stream === true) {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      });
+      const send = (event, data) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+      let text = '';
+      let finalUsage = null;
+      try {
+        const r = await callUpstreamWithRotation({
+          body: oaBody,
+          ctx,
+          stream: true,
+          res: {
+            // 伪 res：把上游 SSE 的增量喂进来，自己攒文本，最后一次性发事件
+            writeHead() {},
+            write(chunk) {
+              const s = chunk.toString('utf8');
+              for (const line of s.split('\n')) {
+                if (!line.startsWith('data:')) continue;
+                const payload = line.slice(5).trim();
+                if (!payload || payload === '[DONE]') continue;
+                let j;
+                try {
+                  j = JSON.parse(payload);
+                } catch {
+                  continue;
+                }
+                const d = j?.choices?.[0]?.delta?.content;
+                if (typeof d === 'string') text += d;
+                if (j?.usage) finalUsage = j.usage;
+              }
+              return true;
+            },
+            end() {},
+            get headersSent() {
+              return false;
+            },
+            on() {},
+          },
+          onUsage: ({ usage }) => {
+            if (usage) finalUsage = usage;
+          },
+        });
+        if (r.status !== 200) {
+          send('error', { type: 'error', error: { code: 'upstream_error', message: r.errorText?.slice(0, 2000) ?? '上游失败' } });
+          return void res.end();
+        }
+      } catch (e) {
+        send('error', { type: 'error', error: { code: e?.code ?? 'gateway_error', message: String(e?.message ?? e) } });
+        return void res.end();
+      }
+
+      const u = finalUsage ?? {};
+      const inputTokens = u.prompt_tokens ?? 0;
+      const outputTokens = u.completion_tokens ?? 0;
+      const usage = {
+        input_tokens: inputTokens,
+        input_tokens_details: { cached_tokens: u.prompt_tokens_details?.cached_tokens ?? 0 },
+        output_tokens: outputTokens,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: u.total_tokens ?? inputTokens + outputTokens,
+      };
+      for (const e of responsesStreamEvents({ responseId: respId, model: oaBody.model, text, usage })) {
+        send(e.event, e.data);
+      }
+      finishUsage({ usage: finalUsage, account: null, model: oaBody.model, status: 200, stream: true });
+      return void res.end();
+    }
+
+    // 非流式
+    const r = await callUpstreamWithRotation({ body: oaBody, ctx, stream: false });
+    if (r.bizError) {
+      finishUsage({ usage: null, account: r.account, model: oaBody.model, status: r.status, stream: false });
+      return void sendJson(res, r.status, {
+        error: {
+          code: `upstream_${r.bizError.code}`,
+          message: r.bizError.message || '上游拒绝了这次请求',
+          type: 'upstream_error',
+        },
+      });
+    }
+    let json;
+    try {
+      json = JSON.parse(r.body.toString('utf8'));
+    } catch {
+      return void sendJson(res, 502, {
+        error: { code: 'bad_upstream_response', message: r.body.toString('utf8').slice(0, 2000) },
+      });
+    }
+    const { usage: u2, estimated } = ensureUsage(json?.usage, { requestBody: oaBody, responseJson: json });
+    finishUsage({ usage: u2, account: r.account, model: oaBody.model, status: r.status, stream: false, estimated });
+    return void sendJson(res, r.status, openAIToResponses(json, body));
+  } catch (e) {
+    const code = gatewayErrorStatus(e);
+    return void sendJson(res, code, {
+      error: { code: e?.code ?? 'gateway_error', message: String(e?.message ?? e) },
+    });
+  }
+}
+
   return void sendJson(res, 404, {
     error: {
       code: 'unknown_endpoint',
       message: `网关模式暂不支持 ${method} ${p}`,
-      supported: ['GET /v1/models', 'POST /v1/chat/completions', 'POST /v1/messages'],
+      supported: [
+        'GET /v1/models',
+        'POST /v1/chat/completions',
+        'POST /v1/responses',
+        'POST /v1/messages',
+      ],
     },
   });
 }
