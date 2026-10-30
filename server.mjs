@@ -1240,7 +1240,8 @@ async function handleGateway(req, res, url, method, headers, reqId, started) {
           ...(m?.name && m.name !== id ? { display_name: m.name } : {}),
           ...(m?.contextWindow ? { context_window: m.contextWindow } : {}),
           ...(m?.maxTokens ? { max_tokens: m.maxTokens } : {}),
-          // 价格（积分 / 千 token），下游可据此估算成本
+          // 价格（积分 / 千 token）。注意：这里保持上游原始口径不变，
+          // 面板展示时才 ×1000 换成「积分/Mtoken」，避免破坏下游已有集成。
           ...(price?.input != null ? { input_price: price.input } : {}),
           ...(price?.cache != null ? { cache_price: price.cache } : {}),
           ...(price?.output != null ? { output_price: price.output } : {}),

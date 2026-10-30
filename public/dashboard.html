@@ -288,7 +288,7 @@ dialog h4{margin:0 0 14px;font-size:14px}
     <div class="hint" id="modelsHint" style="margin:10px 0"></div>
     <div class="card"><table>
       <thead><tr>
-        <th>模型</th><th>价格（积分/千 token）</th><th class="num">上下文</th><th class="num">最大输出</th><th>能力</th><th>可用账号</th>
+        <th>模型</th><th>价格（积分/Mtoken）</th><th class="num">上下文</th><th class="num">最大输出</th><th>能力</th><th>可用账号</th>
       </tr></thead>
       <tbody id="modelsBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
     </table></div>
@@ -882,15 +882,23 @@ function renderAccountInfo(info) {
   const priceCell = (m) => {
     const t = m.tiers ?? [];
     if (!t.length) return '<span class="muted">—</span>';
+    // 上游单价是「积分/千 token」，这里统一换成「积分/Mtoken」（×1000），
+    // 避免 8 这种数字被误读成每百万 token 只要 8 积分。
+    const per = (v) => {
+      if (v == null) return '—';
+      const n = Number(v) * 1000;
+      // 价格不加千分位（8000 比 8,000 更紧凑），小数最多 2 位
+      return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)));
+    };
     if (t.length === 1) {
-      return `<span class="mono">入 ${t[0].input ?? '—'} / 缓存 ${t[0].cache ?? '—'} / 出 ${t[0].output ?? '—'}</span>`;
+      return `<span class="mono">入 ${per(t[0].input)} / 缓存 ${per(t[0].cache)} / 出 ${per(t[0].output)}</span>`;
     }
-    return t.map((x) => `<div class="mono" style="font-size:11px">≤${x.inputTo < 0 ? '∞' : x.inputTo}：入 ${x.input} / 缓存 ${x.cache} / 出 ${x.output}</div>`).join('');
+    return t.map((x) => `<div class="mono" style="font-size:11px">≤${x.inputTo < 0 ? '∞' : x.inputTo}：入 ${per(x.input)} / 缓存 ${per(x.cache)} / 出 ${per(x.output)}</div>`).join('');
   };
 
   const mtable = models.length
     ? `<table><thead><tr>
-        <th>模型</th><th>别名</th><th>价格（积分/千 token）</th>
+        <th>模型</th><th>别名</th><th>价格（积分/Mtoken）</th>
         <th class="num">上下文</th><th class="num">最大输出</th><th>能力</th>
       </tr></thead><tbody>` +
       models.map((m) => `<tr>
@@ -972,10 +980,16 @@ async function loadModels() {
     $('modelsBody').innerHTML = models.length
       ? models.map((m) => {
           const t = m.tiers ?? [];
+          // 单价统一换成「积分/Mtoken」（上游是积分/千 token，×1000）
+          const per = (v) => {
+            if (v == null) return '—';
+            const n = Number(v) * 1000;
+            return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)));
+          };
           const price = !t.length ? '<span class="muted">—</span>'
             : t.length === 1
-              ? `<span class="mono">入 ${t[0].input ?? '—'} / 缓存 ${t[0].cache ?? '—'} / 出 ${t[0].output ?? '—'}</span>`
-              : t.map((x) => `<div class="mono" style="font-size:11px">≤${x.inputTo < 0 ? '∞' : fmt(x.inputTo)}：入 ${x.input} / 缓存 ${x.cache} / 出 ${x.output}</div>`).join('');
+              ? `<span class="mono">入 ${per(t[0].input)} / 缓存 ${per(t[0].cache)} / 出 ${per(t[0].output)}</span>`
+              : t.map((x) => `<div class="mono" style="font-size:11px">≤${x.inputTo < 0 ? '∞' : fmt(x.inputTo)}：入 ${per(x.input)} / 缓存 ${per(x.cache)} / 出 ${per(x.output)}</div>`).join('');
           return `<tr>
             <td class="mono">${esc(m.id)}${m.alias ? `<div class="hint mono">${esc(m.alias)}</div>` : ''}</td>
             <td>${price}</td>
@@ -1408,7 +1422,7 @@ async function loadRequests() {
       ['缓存命中', s.cachePct == null ? '—' : s.cachePct + '%', `${fmtTok(s.cachedTokens)} / ${fmtTok(s.promptTokens)}`],
       ['缓存省下', fmtCredit(s.creditSaved), '相比全部按原价'],
       ['输出 Token', fmtTok(s.completionTokens), '平均 ' + (s.avgDurMs ?? 0) + ' ms'],
-      ['每千 Token', s.creditPerKTok == null ? '—' : s.creditPerKTok, '平均积分成本'],
+      ['每 Mtoken', s.creditPerKTok == null ? '—' : fmtCredit(s.creditPerKTok * 1000), '平均积分成本'],
     ].map(([l, v, sub]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join('');
 
     // 缓存口径说明：区分「支持缓存的请求」和「该模型压根不返回缓存字段」
@@ -1518,7 +1532,7 @@ async function loadUsage() {
           <td class="num">${pct(m.cachePct)}</td>
           <td class="num">${fmtTok(m.completionTokens)}</td>
           <td class="num">${fmtTok(m.totalTokens)}</td>
-          <td class="num">${fmtCredit(m.credit)}${m.creditPerKTok != null ? `<div class="sub muted">${m.creditPerKTok}/千</div>` : ''}</td>
+          <td class="num">${fmtCredit(m.credit)}${m.creditPerKTok != null ? `<div class="sub muted">${fmtCredit(m.creditPerKTok * 1000)}/M</div>` : ''}</td>
           <td><div class="bar"><i style="width:${Math.round(m.totalTokens/total*100)}%"></i></div></td>
         </tr>`).join('')
       : '<tr><td colspan="9" class="empty">暂无数据</td></tr>';
