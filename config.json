@@ -175,11 +175,11 @@
       "proxy": ""
     },
     "pacing": {
-      "maxConcurrentPerAccount": 1,
+      "maxConcurrentPerAccount": 2,
       "maxGlobalConcurrent": 8,
       "minIntervalMs": 250,
       "jitterMs": 150,
-      "queueTimeoutMs": 30000
+      "queueTimeoutMs": 60000
     },
     "cooldown": {
       "on429Ms": 60000,

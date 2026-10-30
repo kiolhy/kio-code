@@ -28,6 +28,10 @@ const ok = (n, c, e = '') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// slow-model 挂住的时长：要比排队预算长，
+// 才能让「所有账号都满」那个用例真的等到超时
+const SLOW_MS = 2500;
+
 /* ---------- 假上游 ---------- */
 const seen = { requests: [] };
 
@@ -47,6 +51,24 @@ const upstream = http.createServer((req, res) => {
     if (body?.model === 'rot-model' && String(req.headers.authorization ?? '').includes('AKGATEWAYTEST0001')) {
       res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '5' });
       res.end(JSON.stringify({ error: { code: 'rate_limited', message: 'slow down' } }));
+      return;
+    }
+
+    // 占号测试用：slow-model 挂住一段时间才回，用来把账号的并发名额占满
+    if (body?.model === 'slow-model') {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            id: 'chatcmpl-slow',
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: '慢回复' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+          })
+        );
+      }, SLOW_MS);
       return;
     }
 
@@ -98,6 +120,19 @@ cfg.gateway = {
   regions: { cn: `http://127.0.0.1:${UP_PORT}`, intl: `http://127.0.0.1:${UP_PORT}` },
   chatPath: '/api/v2/chat/completions',
   models: ['mock-thinking', 'mock-flagship'],
+};
+// 节流参数钉死成「单账号 1 并发 + 1.2s 排队上限」，
+// [7c] 才能稳定复现「一个号忙、另一个号空闲」的场景，也不会等太久
+cfg.stealth = {
+  ...(cfg.stealth ?? {}),
+  pacing: {
+    ...(cfg.stealth?.pacing ?? {}),
+    maxConcurrentPerAccount: 1,
+    maxGlobalConcurrent: 8,
+    minIntervalMs: 0,
+    jitterMs: 0,
+    queueTimeoutMs: 1200,
+  },
 };
 
 const dataDir = path.join(ROOT, 'data', 'gateway-test');
@@ -336,6 +371,65 @@ try {
     String(seen.requests[0]?.headers?.authorization ?? '').includes('AKGATEWAYTEST0002'),
     String(seen.requests[0]?.headers?.authorization ?? '').slice(0, 40)
   );
+
+  /* ---------- 忙号换号（gateway_busy 修复） ---------- */
+  console.log('\n\x1b[1m[7c] 一个账号忙时换号，而不是直接 503\x1b[0m');
+  // 第一个账号在上面的轮换测试里吃了 429，还在冷却；再建一个号，
+  // 保证这里有「两个都能用」的账号
+  const acc3Res = await fetch(`${GW}/panel/api/accounts`, {
+    method: 'POST',
+    headers: H,
+    body: JSON.stringify({
+      name: 'gw-test-3',
+      accessKeyId: 'AKGATEWAYTEST0003',
+      secretAccessKey: 'SKGATEWAYTEST0000000000000000000000000003',
+      region: 'cn',
+    }),
+  });
+  ok('创建第三个账号', acc3Res.status === 200);
+  // 解除 Key 上的账号绑定，让调度器自己挑号
+  await fetch(`${GW}/panel/api/keys/${keyId}`, {
+    method: 'PATCH',
+    headers: H,
+    body: JSON.stringify({ accountRef: null }),
+  });
+
+  const slowFetch = (tag) =>
+    fetch(`${GW}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({ model: 'slow-model', messages: [{ role: 'user', content: tag }] }),
+    });
+
+  seen.requests.length = 0;
+  const slowP1 = slowFetch('占住第一个账号');
+  await sleep(350); // 等第一个请求真正拿到名额
+  const tBusy = Date.now();
+  const slowR2 = await slowFetch('应该换到另一个账号');
+  const busyElapsed = Date.now() - tBusy;
+  const slowR1 = await slowP1;
+
+  ok('占号请求本身成功', slowR1.status === 200, `status=${slowR1.status}`);
+  ok('另一个账号空闲时第二个请求直接成功', slowR2.status === 200, `status=${slowR2.status}`);
+  ok('且没有傻等排队（只花了自己那一趟的时间）', busyElapsed < SLOW_MS + 900, `${busyElapsed}ms`);
+  const slowAks = seen.requests
+    .filter((r) => r.body?.model === 'slow-model')
+    .map((r) => /Access=([^,]+)/.exec(String(r.headers.authorization ?? ''))?.[1]);
+  ok('两个慢请求分散到了两个账号', new Set(slowAks).size === 2, slowAks.join(','));
+
+  // 两个账号都占满时，才该 503，并且必须带 Retry-After
+  seen.requests.length = 0;
+  const full1 = slowFetch('占满一号');
+  await sleep(300);
+  const full2 = slowFetch('占满二号');
+  await sleep(300);
+  const full3 = await slowFetch('第三个应该被限流');
+  ok('两个账号都满时返回 503', full3.status === 503, `status=${full3.status}`);
+  ok('503 带 Retry-After 头', !!full3.headers.get('retry-after'), String(full3.headers.get('retry-after')));
+  const full3j = await full3.json();
+  ok('503 错误码是 gateway_busy', full3j?.error?.code === 'gateway_busy', full3j?.error?.code ?? '');
+  ok('503 带 retry_after_ms', Number(full3j?.error?.retry_after_ms) > 0, String(full3j?.error?.retry_after_ms));
+  await Promise.all([full1, full2]);
 
   /* ---------- 无凭据时的行为 ---------- */
   console.log('\n\x1b[1m[8] 无账号时的错误\x1b[0m');

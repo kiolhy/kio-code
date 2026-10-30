@@ -941,6 +941,33 @@ function gatewayErrorStatus(e) {
 }
 
 /**
+ * 统一发网关错误。
+ *
+ * 繁忙/冷却时带 Retry-After —— 客户端立刻重试只会把队列压得更死，
+ * 而它拿到 503 后通常是无脑重试。给出建议等待时间后，
+ * SDK / CLI 的退避逻辑才有东西可用。
+ */
+function sendGatewayError(res, e) {
+  const status = gatewayErrorStatus(e);
+  const retryAfterMs = Number(e?.retryAfterMs ?? 0);
+  if ((status === 503 || status === 429) && !res.headersSent) {
+    try {
+      const secs = Math.max(1, Math.ceil((retryAfterMs > 0 ? retryAfterMs : 2000) / 1000));
+      res.setHeader('retry-after', String(secs));
+    } catch {
+      /* 头已经发了，没法再补 */
+    }
+  }
+  return void sendJson(res, status, {
+    error: {
+      code: e?.code ?? 'gateway_error',
+      message: String(e?.message ?? e),
+      ...(retryAfterMs > 0 ? { retry_after_ms: retryAfterMs } : {}),
+    },
+  });
+}
+
+/**
  * 一次上游调用的重试 + 轮换：命中 rotateOnStatus 就换下一个账号再试一遍。
  * 流式请求只有在还没写响应头时才能重试。
  */
@@ -973,15 +1000,33 @@ async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
   // 会话粘性：同一会话优先回到上次服务的账号，保住上游 prompt cache
   const sessionKey = ctx?.sessionKey ?? ctx?.conversationId ?? null;
 
+  // 排队预算按「可用账号数」切成份，别让一个忙账号吃掉全部等待时间。
+  // 之前是每个账号各等满 queueTimeoutMs，第一个账号等满了就 break，
+  // 明明另一个账号闲着也直接 503 —— 这是 gateway_busy 的主因。
+  const totalBudget = Number(governor.pacing?.queueTimeoutMs ?? 30000);
+  const deadline = Date.now() + totalBudget;
+  const enabledCount = Math.max(
+    1,
+    (panel.state?.accounts ?? []).filter((a) => a.enabled !== false).length
+  );
+
   for (let attempt = 0; attempt < attempts; attempt++) {
-    // 走调度器选号（会话粘性 → 手动权重 → 平滑加权轮询），而不是裸轮询
-    const account = panel.pickAccount(ctx?.accountRef ?? null, {
-      model,
-      sessionKey,
-      exclude: tried,
-    });
+    // 先把这个模型所有候选账号排出来，优先选「现在就能拿到名额」的那个。
+    // 只有一个候选时行为和原来一样。
+    const cands = [];
+    for (let i = 0; i < enabledCount; i++) {
+      const a = panel.pickAccount(ctx?.accountRef ?? null, {
+        model,
+        sessionKey,
+        exclude: [...tried, ...cands.map((x) => x.id)],
+      });
+      if (!a || cands.some((x) => x.id === a.id)) break;
+      cands.push(a);
+    }
+    const account = cands.find((a) => !governor.isCoolingDown(a) && governor.hasFreeSlot(a)) ?? cands[0] ?? null;
+
     if (process.env.MOCK_HUB_DEBUG_PICK) {
-      log('info', `[pick] attempt=${attempt} model=${model} ref=${ctx?.accountRef ?? '-'} account=${account?.id ?? 'NULL'} tried=${tried.join(',') || '-'}`);
+      log('info', `[pick] attempt=${attempt} model=${model} ref=${ctx?.accountRef ?? '-'} account=${account?.id ?? 'NULL'} cands=${cands.map((c) => c.id).join('/') || '-'} tried=${tried.join(',') || '-'}`);
     }
     const creds = account
       ? pickCredentials({ ctx: { ...ctx, authAccount: account }, panel, cfg, exclude: tried })
@@ -1004,13 +1049,19 @@ async function callUpstreamWithRotation({ body, ctx, stream, res, onUsage }) {
 
     let release;
     try {
-      // 账号级并发 / 最小间隔 / 冷却都在这里排队
-      release = await governor.acquire(creds.account);
+      // 账号级并发 / 最小间隔 / 冷却都在这里排队。
+      // 本次只肯等「剩余预算 ÷ 还没试过的账号数」，等不到就换下一个号。
+      const remaining = Math.max(0, deadline - Date.now());
+      const slotsLeft = Math.max(1, enabledCount - tried.length);
+      const slice = Math.max(800, Math.floor(remaining / slotsLeft));
+      release = await governor.acquire(creds.account, { timeoutMs: slice });
     } catch (e) {
       lastError = e;
       if (creds.account?.id) tried.push(creds.account.id);
-      if (e.code === 'account_cooldown') {
-        cooling = creds.account?.id ?? null;
+      // 冷却和繁忙都属于「这个号现在用不了」，换下一个号再试，
+      // 不要 break —— 原先是 break，导致另一个空闲账号被白白浪费。
+      if (e.code === 'account_cooldown' || e.code === 'gateway_busy') {
+        if (e.code === 'account_cooldown') cooling = creds.account?.id ?? null;
         continue;
       }
       break;
@@ -1392,10 +1443,7 @@ if (p === '/v1/chat/completions' && method === 'POST') {
     finishUsage({ usage: u2, account: r.account, model: body?.model, status: r.status, stream: false, estimated });
     return void sendJson(res, r.status, json);
   } catch (e) {
-    const code = gatewayErrorStatus(e);
-    return void sendJson(res, code, {
-      error: { code: e?.code ?? 'gateway_error', message: String(e?.message ?? e) },
-    });
+    return void sendGatewayError(res, e);
   }
 }
 
@@ -1416,8 +1464,7 @@ if (p === '/v1/messages' && method === 'POST') {
     finishUsage({ usage: json?.usage, account: r.account, model: oaBody.model, status: r.status, stream: false });
     return void sendJson(res, r.status, openAIToAnthropic(json));
   } catch (e) {
-    const code = gatewayErrorStatus(e);
-    return void sendJson(res, code, { error: { code: e?.code ?? 'gateway_error', message: String(e?.message ?? e) } });
+    return void sendGatewayError(res, e);
   }
 }
 
@@ -1542,10 +1589,7 @@ if (p === '/v1/responses' && method === 'POST') {
     finishUsage({ usage: u2, account: r.account, model: oaBody.model, status: r.status, stream: false, estimated });
     return void sendJson(res, r.status, openAIToResponses(json, body));
   } catch (e) {
-    const code = gatewayErrorStatus(e);
-    return void sendJson(res, code, {
-      error: { code: e?.code ?? 'gateway_error', message: String(e?.message ?? e) },
-    });
+    return void sendGatewayError(res, e);
   }
 }
 

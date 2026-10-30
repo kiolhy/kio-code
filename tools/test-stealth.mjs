@@ -172,6 +172,62 @@ console.log('\n\x1b[1m[4] 节流：并发 / 间隔 / 冷却\x1b[0m');
   ok('Retry-After 日期解析', parseRetryAfter(new Date(Date.now() + 5000).toUTCString()) > 3000);
 }
 
+console.log('\n\x1b[1m[4b] 名额探测：hasFreeSlot / freeInMs\x1b[0m');
+{
+  // 轮换时靠这两个方法判断「要不要傻等」，踩过的坑：
+  // 一个账号忙、另一个账号闲着，代码却死等第一个然后 503。
+  const gov = createGovernor({
+    cfg: { stealth: { pacing: { maxConcurrentPerAccount: 1, maxGlobalConcurrent: 4, minIntervalMs: 0, jitterMs: 1, queueTimeoutMs: 2000 } } },
+  });
+  const a = { id: 'acc_a' };
+  const b = { id: 'acc_b' };
+
+  ok('空闲账号有免费名额', gov.hasFreeSlot(a) === true);
+  const rel = await gov.acquire(a);
+  ok('占住后该账号没有免费名额', gov.hasFreeSlot(a) === false);
+  ok('另一个账号仍然空闲', gov.hasFreeSlot(b) === true);
+  ok('占住后 freeInMs 非 0', gov.freeInMs(a) > 0, String(gov.freeInMs(a)));
+  ok('空闲账号 freeInMs = 0', gov.freeInMs(b) === 0);
+
+  rel();
+  ok('释放后恢复可探测到空闲', gov.hasFreeSlot(a) === true);
+
+  gov.penalize(b, 429, 0);
+  ok('冷却中的账号不算空闲', gov.hasFreeSlot(b) === false);
+  ok('冷却中 freeInMs 反映冷却剩余', gov.freeInMs(b) > 1000, String(gov.freeInMs(b)));
+
+  // 繁忙错误要带上 retryAfterMs，客户端才有退避依据
+  const gov3 = createGovernor({
+    cfg: { stealth: { pacing: { maxConcurrentPerAccount: 1, minIntervalMs: 0, jitterMs: 1, queueTimeoutMs: 0 } } },
+  });
+  const hold = await gov3.acquire(a);
+  let busy = null;
+  try {
+    await gov3.acquire(a, { timeoutMs: 30 });
+  } catch (e) {
+    busy = e;
+  }
+  ok('排队超时报 gateway_busy', busy?.code === 'gateway_busy', String(busy?.code));
+  ok('繁忙错误带 retryAfterMs', Number(busy?.retryAfterMs) > 0, String(busy?.retryAfterMs));
+  ok('繁忙错误带账号标识', busy?.account === 'acc_a', String(busy?.account));
+  hold();
+
+  // 全局并发上限
+  const gov4 = createGovernor({
+    cfg: { stealth: { pacing: { maxConcurrentPerAccount: 5, maxGlobalConcurrent: 1, minIntervalMs: 0, jitterMs: 1, queueTimeoutMs: 0 } } },
+  });
+  const g1 = await gov4.acquire(a);
+  let globalBusy = null;
+  try {
+    await gov4.acquire(b, { timeoutMs: 30 });
+  } catch (e) {
+    globalBusy = e.code;
+  }
+  ok('全局并发满了也拒绝', globalBusy === 'gateway_busy', String(globalBusy));
+  ok('全局满时 hasFreeSlot 为假', gov4.hasFreeSlot(b) === false);
+  g1();
+}
+
 console.log('\n\x1b[1m[5] 传输层：头顺序 / gzip / CONNECT 代理\x1b[0m');
 {
   const seen = [];
