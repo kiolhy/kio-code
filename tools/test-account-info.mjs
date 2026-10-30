@@ -350,6 +350,63 @@ console.log('\n\x1b[1m[parseModels] 两类账号形态\x1b[0m');
   ok('三个字段都缺时丢掉该条', parseModels(D).length === 0, String(parseModels(D).length));
 }
 
+
+console.log('\n\x1b[1m[pickBalance] 套餐余额结构\x1b[0m');
+{
+  // 网页端 /portal/snap-manager/v1/package/overview 的真实返回
+  const real = {
+    all_credit_package: {
+      package_credit_amount: 9600.0,
+      package_credit_used: 822.98,
+      package_credit_remain: 8777.02,
+      package_credit_user_amount: 9600.0,
+      package_credit_user_used: 822.98,
+      package_credit_user_remain: 8777.02,
+      expiring_credit_amount: 92.98,
+      expiring_credit_user_amount: 92.98,
+    },
+    basic_package: {
+      enable: true,
+      resource_id: 'c5fb925564e0474698ad1da6564c33b3',
+      package_credit_amount: 500.0,
+      package_credit_used: 0.0,
+      package_credit_remain: 500.0,
+    },
+    ondemand_credit_package: null,
+    bonus_credit_package: {
+      package_credit_amount: 9100.0,
+      package_credit_used: 822.98,
+      package_credit_remain: 8277.02,
+      expiring_credit_amount: 92.98,
+    },
+    model_package: [],
+  };
+
+  const b = pickBalance(real);
+  ok('摊平 all_credit_package.remain',
+    b['all_credit_package.package_credit_remain'] === 8777.02,
+    String(b['all_credit_package.package_credit_remain']));
+  ok('摊平 basic_package.remain',
+    b['basic_package.package_credit_remain'] === 500,
+    String(b['basic_package.package_credit_remain']));
+  ok('摊平 bonus_credit_package.remain',
+    b['bonus_credit_package.package_credit_remain'] === 8277.02,
+    String(b['bonus_credit_package.package_credit_remain']));
+  ok('ondemand 为 null 时跳过', !Object.keys(b).some((k) => k.startsWith('ondemand_')));
+
+  // 关键：all 是总和，basic+bonus 是分项，不能全加（9600 = 500 + 9100）
+  ok('balanceTotal 取 all 不重复相加', balanceTotalOf(b) === 8777.02, String(balanceTotalOf(b)));
+
+  // 非套餐结构仍然走通用遍历
+  const plain = { result: { balance: 100, used: 20, remain: 80 } };
+  const pb = pickBalance(plain);
+  ok('通用结构仍能解析', pb['result.balance'] === 100 || pb['result.remain'] === 80, JSON.stringify(pb));
+
+  // 空对象不炸
+  ok('空对象返回空', Object.keys(pickBalance({})).length === 0);
+  ok('null 不炸', Object.keys(pickBalance(null)).length === 0);
+}
+
 console.log('');
 const color = fail === 0 ? '\x1b[32m' : '\x1b[31m';
 console.log(`${color}结果：${pass} 通过\x1b[0m，${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${fail} 失败\x1b[0m`);
