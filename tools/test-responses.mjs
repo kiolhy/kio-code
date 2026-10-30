@@ -160,6 +160,42 @@ console.log('\n\x1b[1m[2] openAIToResponses 响应转换\x1b[0m');
   ok('model 回落到请求值', noModel.model === 'fallback');
 }
 
+/* ---------------- [2b] 推理模型（reasoning_content） ---------------- */
+console.log('\n\x1b[1m[2b] 推理模型 reasoning_content\x1b[0m');
+{
+  // kimi-k3 / deepseek 这类：思维链走 reasoning_content，content 才是回答。
+  // 实测 max_tokens 小时模型可能全花在思维链上，只读 content 会拿到空串。
+  const r = openAIToResponses({
+    id: 'rs1',
+    model: 'kimi-k3',
+    choices: [{ message: { role: 'assistant', reasoning_content: '用户在问好，先想一下…', content: '你好' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 10, completion_tokens: 30, total_tokens: 40, completion_tokens_details: { reasoning_tokens: 20 } },
+  }, { model: 'kimi-k3' });
+
+  const rs = r.output.find((o) => o.type === 'reasoning');
+  ok('reasoning_content → reasoning item', !!rs);
+  ok('reasoning.summary 带文本', rs?.summary?.[0]?.text === '用户在问好，先想一下…');
+  ok('reasoning.summary 类型对', rs?.summary?.[0]?.type === 'summary_text');
+  ok('reasoning 在 message 之前', r.output[0].type === 'reasoning' && r.output[1].type === 'message');
+  ok('output_text 只算回答不算思维链', r.output_text === '你好');
+  ok('reasoning_tokens 透传', r.usage.output_tokens_details.reasoning_tokens === 20);
+
+  // 只有思维链、没有回答（小 max_tokens 的典型情况）
+  const only = openAIToResponses({
+    id: 'rs2',
+    model: 'kimi-k3',
+    choices: [{ message: { role: 'assistant', reasoning_content: '想了很多但没写完', content: '' }, finish_reason: 'length' }],
+    usage: { prompt_tokens: 10, completion_tokens: 16, total_tokens: 26 },
+  }, { model: 'kimi-k3' });
+  ok('只有思维链时 output 非空', only.output.length === 1);
+  ok('只有思维链时是 reasoning 项', only.output[0].type === 'reasoning');
+  ok('只有思维链时 output_text 为空串', only.output_text === '');
+
+  // 没有 reasoning_content 时不该凭空造 reasoning 项
+  const plain = openAIToResponses({ id: 'p', model: 'GLM-5.2', choices: [{ message: { content: '普通回答' } }], usage: {} }, { model: 'GLM-5.2' });
+  ok('无思维链时不造 reasoning 项', !plain.output.some((o) => o.type === 'reasoning'));
+}
+
 /* ---------------- [3] 流式事件 ---------------- */
 console.log('\n\x1b[1m[3] responsesStreamEvents 事件序列\x1b[0m');
 {
@@ -187,6 +223,42 @@ console.log('\n\x1b[1m[3] responsesStreamEvents 事件序列\x1b[0m');
   const n2 = evs2.map((e) => e.event);
   ok('无文本时不发 delta', !n2.includes('response.output_text.delta'));
   ok('无文本时仍有 completed', n2[n2.length - 1] === 'response.completed');
+}
+
+/* ---------------- [4] 流式 + 推理 ---------------- */
+console.log('\n\x1b[1m[4] 流式思维链事件\x1b[0m');
+{
+  const evs = responsesStreamEvents({
+    responseId: 'resp_r',
+    model: 'kimi-k3',
+    text: '你好',
+    reasoning: '用户问好',
+    usage: { input_tokens: 5, output_tokens: 20, total_tokens: 25 },
+  });
+  const names = evs.map((e) => e.event);
+  ok('有 reasoning_summary_text.delta', names.includes('response.reasoning_summary_text.delta'));
+  ok('有 reasoning_summary_text.done', names.includes('response.reasoning_summary_text.done'));
+  ok('有 reasoning_summary_part.added', names.includes('response.reasoning_summary_part.added'));
+  ok('思维链 delta 带文本', evs.find((e) => e.event === 'response.reasoning_summary_text.delta')?.data?.delta === '用户问好');
+
+  // 顺序：reasoning 的 output_item 在 message 的 output_item 之前
+  const itemAdded = evs.filter((e) => e.event === 'response.output_item.added');
+  ok('两个 output_item.added', itemAdded.length === 2);
+  ok('reasoning 的 output_index=0', itemAdded[0]?.data?.item?.type === 'reasoning' && itemAdded[0]?.data?.output_index === 0);
+  ok('message 的 output_index=1', itemAdded[1]?.data?.item?.type === 'message' && itemAdded[1]?.data?.output_index === 1);
+
+  const done = evs.find((e) => e.event === 'response.completed');
+  ok('completed.output 含两项', done?.data?.response?.output?.length === 2);
+  ok('completed.output[0] 是 reasoning', done?.data?.response?.output?.[0]?.type === 'reasoning');
+  ok('completed.output_text 只含回答', done?.data?.response?.output_text === '你好');
+
+  // 只有思维链没有回答
+  const evs3 = responsesStreamEvents({ responseId: 'r3', model: 'm', text: '', reasoning: '只有思维链', usage: null });
+  const n3 = evs3.map((e) => e.event);
+  ok('只有思维链时有 reasoning delta', n3.includes('response.reasoning_summary_text.delta'));
+  ok('只有思维链时无 output_text.delta', !n3.includes('response.output_text.delta'));
+  const d3 = evs3.find((e) => e.event === 'response.completed');
+  ok('只有思维链时 output 仍有内容', d3?.data?.response?.output?.length === 1);
 }
 
 console.log('');

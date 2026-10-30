@@ -1439,7 +1439,29 @@ if (p === '/v1/responses' && method === 'POST') {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       };
       let text = '';
+      let reasoning = '';
       let finalUsage = null;
+      // SSE 分片可能把一行 data: 从中间切断，必须留 carry 缓冲，
+      // 否则被切断的增量直接丢掉（表现为 output_text 空或残缺）
+      let carry = '';
+      // 把一行 data: 吃进去
+      const eat = (line) => {
+        if (!line.startsWith('data:')) return;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') return;
+        let j;
+        try {
+          j = JSON.parse(payload);
+        } catch {
+          return;
+        }
+        const d = j?.choices?.[0]?.delta ?? {};
+        // 推理模型（kimi-k3 / deepseek）先把内容写 reasoning_content，
+        // 只读 content 会在小 max_tokens 时拿到空串
+        if (typeof d.reasoning_content === 'string') reasoning += d.reasoning_content;
+        if (typeof d.content === 'string') text += d.content;
+        if (j?.usage) finalUsage = j.usage;
+      };
       try {
         const r = await callUpstreamWithRotation({
           body: oaBody,
@@ -1449,21 +1471,10 @@ if (p === '/v1/responses' && method === 'POST') {
             // 伪 res：把上游 SSE 的增量喂进来，自己攒文本，最后一次性发事件
             writeHead() {},
             write(chunk) {
-              const s = chunk.toString('utf8');
-              for (const line of s.split('\n')) {
-                if (!line.startsWith('data:')) continue;
-                const payload = line.slice(5).trim();
-                if (!payload || payload === '[DONE]') continue;
-                let j;
-                try {
-                  j = JSON.parse(payload);
-                } catch {
-                  continue;
-                }
-                const d = j?.choices?.[0]?.delta?.content;
-                if (typeof d === 'string') text += d;
-                if (j?.usage) finalUsage = j.usage;
-              }
+              carry += chunk.toString('utf8');
+              const lines = carry.split('\n');
+              carry = lines.pop() ?? '';
+              for (const line of lines) eat(line);
               return true;
             },
             end() {},
@@ -1476,6 +1487,11 @@ if (p === '/v1/responses' && method === 'POST') {
             if (usage) finalUsage = usage;
           },
         });
+        // 收尾：最后一个分片可能没有换行结尾
+        if (carry) {
+          eat(carry);
+          carry = '';
+        }
         if (r.status !== 200) {
           send('error', { type: 'error', error: { code: 'upstream_error', message: r.errorText?.slice(0, 2000) ?? '上游失败' } });
           return void res.end();
@@ -1492,10 +1508,10 @@ if (p === '/v1/responses' && method === 'POST') {
         input_tokens: inputTokens,
         input_tokens_details: { cached_tokens: u.prompt_tokens_details?.cached_tokens ?? 0 },
         output_tokens: outputTokens,
-        output_tokens_details: { reasoning_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: u.completion_tokens_details?.reasoning_tokens ?? 0 },
         total_tokens: u.total_tokens ?? inputTokens + outputTokens,
       };
-      for (const e of responsesStreamEvents({ responseId: respId, model: oaBody.model, text, usage })) {
+      for (const e of responsesStreamEvents({ responseId: respId, model: oaBody.model, text, reasoning, usage })) {
         send(e.event, e.data);
       }
       finishUsage({ usage: finalUsage, account: null, model: oaBody.model, status: 200, stream: true });

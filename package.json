@@ -1,6 +1,6 @@
 {
   "name": "kio-code-gateway",
-  "version": "1.11.0",
+  "version": "1.11.1",
   "private": true,
   "type": "module",
   "description": "码道（CodeArts）CLI 反代网关：OpenAI 兼容入口 + 多账号调度 + 控制台",
